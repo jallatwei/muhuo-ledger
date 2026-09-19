@@ -1,0 +1,1772 @@
+// =============================================================================
+//  小企业自动记账系统 — 数据模型
+//  ============================================================================
+//  金额字段一律 Decimal(18,2)，代码侧用 Decimal，禁止 float。
+//  本文件的权威设计说明见 design/02-数据模型.md，改 schema 必须先改那份文档。
+//
+//  设计红线（见 design/00 第 3 节）：
+//    ① 借贷永远平衡   ② 同一张单据绝不重复入账   ③ 已结账的账改不动
+// =============================================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// =============================================================================
+//  枚举
+// =============================================================================
+
+/// 纳税人身份
+enum TaxpayerType {
+  GENERAL // 一般纳税人
+  SMALL_SCALE // 小规模纳税人
+}
+
+/// 会计期间状态机：OPEN -> CLOSING -> CLOSED，反结账回到 OPEN
+enum PeriodStatus {
+  OPEN // 可增删改凭证
+  CLOSING // 结账施工中，禁止凭证写入
+  CLOSED // 完全冻结
+}
+
+/// 科目类别
+enum AccountCategory {
+  ASSET // 资产
+  LIABILITY // 负债
+  EQUITY // 所有者权益
+  COST // 成本
+  PROFIT_LOSS // 损益
+}
+
+/// 余额正常方向
+enum BalanceDirection {
+  DEBIT
+  CREDIT
+}
+
+/// 辅助核算维度
+enum AuxDimension {
+  CUSTOMER
+  SUPPLIER
+  EMPLOYEE
+  PROJECT
+  DEPARTMENT
+  CONTRACT
+}
+
+/// 凭证状态机
+enum VoucherStatus {
+  DRAFT // 草稿
+  REVIEWING // 待审核
+  APPROVED // 已审核，未过账（尚未分配凭证号）
+  POSTED // 已过账（已分配凭证号，参与余额计算）
+  REVERSED // 已被红冲（分录仍参与余额计算）
+  VOID // 已作废
+}
+
+/// 凭证来源
+enum VoucherSource {
+  MANUAL
+  INVOICE
+  BANK
+  PAYROLL
+  CLOSING
+  OPENING
+}
+
+/// 单据类型
+enum DocType {
+  INVOICE_SALES
+  INVOICE_PURCHASE
+  BANK_SLIP
+  BANK_STATEMENT
+  CONTRACT
+  RECEIPT
+  OTHER
+}
+
+enum DocSource {
+  UPLOAD
+  WATCH_FOLDER
+  EMAIL
+  SCAN
+}
+
+enum DocumentStatus {
+  PENDING
+  EXTRACTING
+  EXTRACTED
+  REVIEW_REQUIRED
+  FAILED
+  ARCHIVED
+}
+
+/// 往来单位角色
+enum PartnerRole {
+  CUSTOMER
+  SUPPLIER
+  BOTH
+  EMPLOYEE
+  OTHER
+}
+
+/// 发票方向
+enum InvoiceDirection {
+  OUTPUT // 销项
+  INPUT // 进项
+}
+
+/// 发票种类
+enum InvoiceCategory {
+  SPECIAL_VAT // 增值税专用发票
+  GENERAL_VAT // 增值税普通发票
+  E_INVOICE // 全电发票（数电票）
+  TRAIN // 火车票
+  AIR // 航空运输电子客票行程单
+  TOLL // 通行费发票
+  OTHER
+}
+
+enum InvoiceStatus {
+  IMPORTED // 已识别，待入账
+  AUTO_DRAFTED // 已自动生成待确认凭证
+  POSTED // 已入账
+  MATCHED // 已匹配收付款
+  RECONCILED // 已对账归档
+  IGNORED // 人工标记不入账
+  NEEDS_REVIEW // 置信度低或校验冲突
+}
+
+/// 规则触发点
+enum RuleTrigger {
+  INVOICE_INPUT
+  INVOICE_OUTPUT
+  BANK_IN
+  BANK_OUT
+  BANK_FEE
+  BANK_INTEREST
+  SALARY_ACCRUAL
+  SALARY_PAYMENT
+  DEPRECIATION
+  AMORTIZATION
+  TAX_PAYMENT
+  OTHER
+}
+
+/// 风险级别与类别
+enum RiskLevel {
+  INFO
+  WARNING
+  CRITICAL
+}
+
+enum RiskCategory {
+  TAX
+  ACCOUNTING
+  FRAUD
+  COMPLIANCE
+  AI
+}
+
+enum RiskAlertStatus {
+  OPEN
+  ACKNOWLEDGED
+  RESOLVED
+  DISMISSED
+}
+
+enum JobStatus {
+  PENDING
+  RUNNING
+  SUCCEEDED
+  FAILED
+  DEAD
+}
+
+enum CloseRunStatus {
+  RUNNING
+  SUCCEEDED
+  FAILED
+  REVERTED
+}
+// =============================================================================
+//  ⑧ 历史数据重建（专门服务于"以前没有账、只有开票与申报记录"的场景）
+//  ============================================================================
+//  设计前提（务必理解）：
+//    只有开票记录 + 申报记录时，能**有据重建**的科目是有限的：
+//      ✓ 收入、销项税额、进项税额、应交税费、所得税费用、应收账款、应付账款
+//      ✗ 现金余额、成本费用、存货、固定资产、实收资本 —— 推不出来，必须问人或倒轧
+//    所以本模块的产出是「期初建账方案」，每一行都标明数据来源：
+//      DECLARED 申报表直接取数 / INVOICE 发票聚合 / DERIVED 倒轧推算 / MANUAL 人工补录
+//    并强制人工确认后才允许生成期初凭证。
+// =============================================================================
+
+/// 导入来源方式
+enum HistorySourceType {
+  INVOICE_SALES // 销项开票明细
+  INVOICE_PURCHASE // 进项发票明细
+  VAT_FILING // 增值税申报记录
+  CIT_FILING // 企业所得税年报/预缴记录
+  FINANCIAL_STATEMENT // 财务报表（资产负债表 / 利润表 / 现金流量表）
+  TAX_RETURN // 税务申报表（增值税 / 企业所得税等）
+}
+
+/// 发票性质
+enum HistoryInvoiceKind {
+  SPECIAL_VAT // 专票
+  GENERAL_VAT // 普票
+  E_INVOICE // 数电票
+  TOLL // 通行费
+  TRAIN // 火车票
+  AIR // 机票
+  OTHER
+}
+
+/// 申报表类型
+enum HistoryFilingType {
+  VAT_MONTHLY // 增值税月报
+  VAT_QUARTERLY // 增值税季报
+  CIT_QUARTERLY // 企业所得税季度预缴
+  CIT_ANNUAL // 企业所得税年度汇算清缴
+  SURTAX // 附加税费
+  STAMP_DUTY // 印花税
+}
+
+/// 财务报表类型（历史资料导入用）
+enum FinancialStatementType {
+  BALANCE_SHEET // 资产负债表
+  INCOME_STATEMENT // 利润表
+  CASH_FLOW // 现金流量表
+}
+
+enum ImportBatchStatus {
+  UPLOADED
+  PARSING
+  MAPPING
+  IMPORTED
+  FAILED
+}
+
+enum HistoryReconStatus {
+  PENDING // 待处理
+  MATCHED // 与申报记录一致
+  MISMATCHED // 存在差异
+  MANUAL // 人工确认过
+  IGNORED
+}
+
+/// 重建步骤（每年一轮，可断点续跑）
+enum ReconstructionStatus {
+  PENDING
+  INPUTS_READY // 发票与申报数据已就位
+  RECONCILED // 已完成发票↔申报核对
+  DERIVED // 已算出应纳税额与利润
+  NEEDS_INPUT // 存在必须人工补录的项
+  READY // 可生成期初方案
+  CONFIRMED
+  FAILED
+}
+
+/// 期初方案每一行的数据来源（★ 决定可信度，必须展示给用户）
+enum OpeningSource {
+  DECLARED // 申报表直接取数（最可信）
+  INVOICE // 发票明细聚合（可信）
+  DERIVED // 由恒等式倒轧（推算，需人工确认）
+  MANUAL // 人工补录
+}
+
+enum OpeningProposalStatus {
+  DRAFT
+  CONFIRMED
+  POSTED
+  REJECTED
+}
+
+// =============================================================================
+//  ① 组织与科目
+// =============================================================================
+
+/// 核算主体
+model Entity {
+  id                      String       @id @default(uuid())
+  name                    String
+  unifiedSocialCreditCode String? /// 统一社会信用代码
+  taxpayerType            TaxpayerType @default(GENERAL)
+  accountingStandard      String       @default("SMALL_ENTERPRISE_2013")
+  baseCurrency            String       @default("CNY")
+  taxAuthority            String? /// 主管税务机关
+  address                 String?
+  phone                   String?
+  legalPerson             String? /// 法定代表人
+  accountantName          String? /// 会计
+  fiscalYearStartMonth    Int          @default(1)
+  /// 是否启用凭证内核的数据库层强制约束（借贷平衡触发器、期间锁等）
+  /// 仅在批量导入/修数时可临时关闭，开关变更本身写入审计日志
+  bookkeepingEnforced     Boolean      @default(true)
+  isActive                Boolean      @default(true)
+  createdAt               DateTime     @default(now())
+  updatedAt               DateTime     @updatedAt
+
+  periods            Period[]
+  fiscalYears        FiscalYear[]
+  accounts           Account[]
+  partners           Partner[]
+  contracts          Contract[]
+  invoices           Invoice[]
+  documents          Document[]
+  bankTransactions   BankTransaction[]
+  vouchers           JournalVoucher[]
+  balances           AccountBalance[]
+  rules              JournalRule[]
+  overrides          ClassificationOverride[]
+  taxProfile         TaxProfile?
+  taxPeriods         TaxPeriod[]
+  riskRules          RiskRule[]
+  riskAlerts         RiskAlert[]
+  closeRuns          PeriodCloseRun[]
+  periodChecks       PeriodCheckResult[]
+  accountMappings    AccountMapping[]
+  certifications     VatCertification[]
+  vatAggregates      VatPeriodAggregate[]
+  taxFilings         TaxFiling[]
+  extractions        ExtractionResult[]
+
+  // ⑧ 历史数据重建
+  historyBatches      HistoryImportBatch[]
+  historyInvoices     HistoryInvoiceRecord[]
+  historyFilings      HistoryFilingRecord[]
+  reconstructions     HistoryReconstruction[]
+  openingProposals    OpeningBalanceProposal[]
+  financialStatements FinancialStatementRecord[]
+
+  memberships Membership[]
+
+  @@map("entity")
+}
+
+/// 会计期间（月）
+model Period {
+  id            String       @id @default(uuid())
+  entityId      String
+  fiscalYear    Int
+  month         Int
+  startsOn      DateTime     @db.Date
+  endsOn        DateTime     @db.Date
+  status        PeriodStatus @default(OPEN)
+  closedAt      DateTime?
+  closedBy      String?
+  /// 反结账次数 —— 审计重点关注项
+  reopenedCount Int          @default(0)
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+
+  entity Entity @relation(fields: [entityId], references: [id], onDelete: Cascade)
+
+  @@unique([entityId, fiscalYear, month])
+  @@index([entityId, status])
+  @@map("period")
+}
+
+/// 会计年度
+model FiscalYear {
+  id       String    @id @default(uuid())
+  entityId String
+  year     Int
+  status   String    @default("OPEN") /// OPEN | CLOSED
+  closedAt DateTime?
+
+  entity Entity @relation(fields: [entityId], references: [id], onDelete: Cascade)
+
+  @@unique([entityId, year])
+  @@map("fiscal_year")
+}
+
+/// 会计科目
+model Account {
+  id         String           @id @default(uuid())
+  entityId   String
+  code       String /// 科目编码，如 "22210101"
+  name       String /// 科目名称
+  fullName   String /// 含上级的完整名称，报表展示用
+  parentId   String?
+  level      Int /// 1..n
+  category   AccountCategory
+  direction  BalanceDirection /// 余额的正常方向
+  /// ★ 只有末级科目允许记账（数据库触发器强制）
+  isLeaf     Boolean          @default(true)
+  isActive   Boolean          @default(true)
+
+  // ---- 报表与申报映射 ----
+  reportItem  String? /// 资产负债表/利润表行项目标识
+  cashflowTag String? /// 现金流量表归类
+  taxTag      String? /// 增值税归集标记，见 design/09 第 6 节
+  /// 必须录入的辅助核算维度
+  auxRequired AuxDimension[]
+
+  /// 系统内置科目不可删除
+  isSystem  Boolean @default(false)
+  sortOrder Int     @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  entity   Entity   @relation(fields: [entityId], references: [id], onDelete: Cascade)
+  parent   Account? @relation("AccountTree", fields: [parentId], references: [id])
+  children Account[] @relation("AccountTree")
+  lines    JournalLine[]
+
+  @@unique([entityId, code])
+  @@index([entityId, parentId])
+  @@index([entityId, reportItem])
+  @@index([entityId, taxTag])
+  @@map("account")
+}
+
+// =============================================================================
+//  ② 业务单据
+// =============================================================================
+
+/// 原始单据文件（只增不改）
+model Document {
+  id           String         @id @default(uuid())
+  entityId     String
+  docType      DocType /// 用户导入时的声明类型
+  detectedType DocType? /// AI 识别出的实际类型（与声明不符则触发风险提示）
+  source       DocSource      @default(UPLOAD)
+  originalName String
+  mimeType     String
+  sizeBytes    Int
+  /// ★ SHA-256 内容哈希：文件级去重与幂等的基础
+  contentHash  String
+  storageKey   String /// 存储路径或对象存储 key
+  pageCount    Int?
+  status       DocumentStatus @default(PENDING)
+  errorMessage String?
+  uploadedBy   String?
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime       @updatedAt
+
+  entity      Entity             @relation(fields: [entityId], references: [id], onDelete: Cascade)
+  extractions ExtractionResult[]
+  invoices    Invoice[]
+
+  /// ★ 同一主体的同一文件只入库一次
+  @@unique([entityId, contentHash])
+  @@index([entityId, status])
+  @@index([entityId, docType])
+  @@map("document")
+}
+
+/// 往来单位
+model Partner {
+  id               String        @id @default(uuid())
+  entityId         String
+  name             String /// 标准化后的名称
+  /// 见过的所有原始写法，用于模糊匹配
+  rawNames         String[]
+  role             PartnerRole[]
+  /// ★ 纳税人识别号：匹配的第一优先级
+  taxNo            String?
+  bankName         String?
+  bankAccount      String?
+  addressPhone     String?
+  /// 该供应商费用的默认科目（L2 历史学习的成果）
+  defaultAccountId String?
+  /// 默认往来科目（应收/应付）
+  defaultArApAccountId String?
+  riskLevel        String        @default("NORMAL") /// NORMAL | WATCH | BLOCK
+  remark           String?
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+
+  entity Entity @relation(fields: [entityId], references: [id], onDelete: Cascade)
+
+  @@unique([entityId, taxNo])
+  @@index([entityId, name])
+  @@map("partner")
+}
+
+/// 合同（辅助/备查定位：不产生分录，只做关联与风险比对）
+model Contract {
+  id             String    @id @default(uuid())
+  entityId       String
+  contractNo     String?
+  name           String
+  counterpartyId String?
+  direction      String /// IN 采购 | OUT 销售
+  amountInclTax  Decimal   @db.Decimal(18, 2)
+  taxRate        Decimal?  @db.Decimal(6, 4)
+  signDate       DateTime? @db.Date
+  startDate      DateTime? @db.Date
+  endDate        DateTime? @db.Date
+  status         String    @default("ACTIVE") /// ACTIVE | FINISHED | TERMINATED
+  documentId     String? /// 合同扫描件
+  remark         String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  entity Entity @relation(fields: [entityId], references: [id], onDelete: Cascade)
+
+  @@index([entityId, direction])
+  @@index([entityId, counterpartyId])
+  @@map("contract")
+}
+
+/// 发票
+model Invoice {
+  id               String          @id @default(uuid())
+  entityId         String
+  direction        InvoiceDirection
+  category         InvoiceCategory
+  /// 发票代码（纸质/老电票 10 或 12 位）
+  invoiceCode      String?
+  /// 发票号码（数电票为 20 位）
+  invoiceNumber    String
+  digitalInvoiceNo String? /// 数电票 20 位号码
+  invoiceDate      DateTime        @db.Date
+
+  sellerTaxNo String?
+  sellerName  String
+  buyerTaxNo  String?
+  buyerName   String
+
+  /// 不含税金额
+  amountExclTax Decimal @db.Decimal(18, 2)
+  taxRate       Decimal @db.Decimal(6, 4)
+  taxAmount     Decimal @db.Decimal(18, 2)
+  /// 价税合计
+  amountInclTax Decimal @db.Decimal(18, 2)
+
+  isRedFlushed      Boolean @default(false) /// 是否红字发票
+  originalInvoiceId String? /// 红冲指向的原票
+  /// 是否可抵扣。集体福利/个人消费/餐饮娱乐等为 false → 税额计入成本，不产生税行
+  isDeductible      Boolean @default(true)
+  /// PURCHASE_MATERIAL | PURCHASE_SERVICE | EXPENSE | FIXED_ASSET | SALES
+  businessType      String?
+
+  accountId   String? /// 费用类发票的对方科目（规则引擎或人工指定）
+  partnerId   String?
+  contractId  String?
+  documentId  String? /// 原始图片/PDF
+  extractionId String? /// 对应抽取结果
+  matchedTransactionId String? /// 已匹配的银行流水
+
+  status      InvoiceStatus @default(IMPORTED)
+  reviewNote  String? /// 人工复核备注（IGNORED 时必填理由）
+  reviewedBy  String?
+  reviewedAt  DateTime?
+  /// ★ 归一化后的业务去重键
+  dedupHash   String
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  entity        Entity         @relation(fields: [entityId], references: [id], onDelete: Cascade)
+  document      Document?      @relation(fields: [documentId], references: [id])
+  lines         InvoiceLine[]
+  certifications VatCertification[]
+  journalLines  JournalLine[]
+
+  /// ★ 业务唯一键：防止同一张票被不同文件重复导入
+  @@unique([entityId, direction, invoiceCode, invoiceNumber, isRedFlushed])
+  @@index([entityId, invoiceDate])
+  @@index([entityId, status])
+  @@index([entityId, dedupHash])
+  @@index([entityId, partnerId])
+  @@map("invoice")
+}
+
+/// 发票明细行（数电票与现代专票都有，用于把一张票拆到多个科目）
+model InvoiceLine {
+  id            String   @id @default(uuid())
+  invoiceId     String
+  lineNo        Int
+  itemName      String
+  spec          String?
+  unit          String?
+  quantity      Decimal? @db.Decimal(18, 4)
+  unitPrice     Decimal? @db.Decimal(18, 6)
+  amountExclTax Decimal  @db.Decimal(18, 2)
+  taxRate       Decimal  @db.Decimal(6, 4)
+  taxAmount     Decimal  @db.Decimal(18, 2)
+  accountId     String? /// 该明细对应的科目
+
+  invoice Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+
+  @@index([invoiceId])
+  @@map("invoice_line")
+}
+
+/// 银行流水 / 回单
+model BankTransaction {
+  id            String   @id @default(uuid())
+  entityId      String
+  accountId     String? /// 会计科目（银行存款明细）
+  bankAccountNo String
+  txnDate       DateTime @db.Date
+  direction     String /// IN 收 | OUT 付
+  amount        Decimal  @db.Decimal(18, 2)
+  balanceAfter  Decimal? @db.Decimal(18, 2)
+
+  counterpartyName      String?
+  counterpartyAccountNo String?
+  summary               String? /// 摘要/用途
+  bankSerialNo          String? /// 银行流水号
+
+  /// 去重：银行流水号优先；无则 日期+金额+对方账号+摘要 哈希
+  dedupHash String
+  /// 会计上的对方科目（自动匹配或人工指定）
+  counterpartAccountId String?
+  matchStatus          String  @default("UNMATCHED") /// UNMATCHED|AUTO_MATCHED|MANUAL_MATCHED|IGNORED
+  sourceDocumentId     String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  entity         Entity              @relation(fields: [entityId], references: [id], onDelete: Cascade)
+  allocations    PaymentAllocation[]
+
+  @@unique([entityId, dedupHash])
+  @@index([entityId, txnDate])
+  @@index([entityId, matchStatus])
+  @@map("bank_transaction")
+}
+
+/// 收付款核销（发票与流水的多对多）
+model PaymentAllocation {
+  id            String   @id @default(uuid())
+  entityId      String
+  invoiceId     String
+  transactionId String
+  amount        Decimal  @db.Decimal(18, 2)
+  allocatedAt   DateTime @default(now())
+  allocatedBy   String?
+  isAuto        Boolean  @default(true)
+
+  transaction BankTransaction @relation(fields: [transactionId], references: [id], onDelete: Cascade)
+
+  @@unique([invoiceId, transactionId])
+  @@index([entityId])
+  @@map("payment_allocation")
+}
+
+/// 单据关联图（合同 ↔ 发票 ↔ 流水 ↔ 凭证）
+model DocumentLink {
+  id       String @id @default(uuid())
+  entityId String
+  fromType String /// CONTRACT | INVOICE | BANK_TRANSACTION | VOUCHER | DOCUMENT
+  fromId   String
+  toType   String
+  toId     String
+  linkType String /// FULFILLS 履约 | PAYMENT 收付款 | REFERENCE 参考 | REVERSES 红冲 | ATTACHMENT 附件
+  createdAt DateTime @default(now())
+
+  @@unique([fromType, fromId, toType, toId, linkType])
+  @@index([entityId])
+  @@map("document_link")
+}
+
+// =============================================================================
+//  ③ 会计内核
+// =============================================================================
+
+/// 记账凭证
+model JournalVoucher {
+  id          String        @id @default(uuid())
+  entityId    String
+  periodId    String /// ★ 冗余存期间，锁期校验快
+  /// ★ 期间年月冗余：PostgreSQL 唯一索引无法跨表 join，
+  ///   凭证号唯一性依赖这两列。由应用层保证与 periodId 一致。
+  periodYear  Int
+  periodMonth Int
+
+  voucherWord String        @default("记") /// 记 / 收 / 付 / 转 / 年初
+  /// ★ 凭证号在过账时才分配，草稿没有号
+  voucherNo   Int
+  voucherDate DateTime      @db.Date
+  status      VoucherStatus @default(DRAFT)
+
+  totalDebit  Decimal @db.Decimal(18, 2)
+  totalCredit Decimal @db.Decimal(18, 2)
+
+  summary     String /// 主摘要
+  attachments Int     @default(0) /// 附件张数（打印凭证册用）
+
+  sourceType VoucherSource
+  sourceId   String? /// 来源业务对象 id
+
+  /// ★ 幂等键：同一来源 + 同一规则版本只可能有一张非作废凭证
+  idempotencyKey String?
+  /// 命中的规则（可追溯）
+  ruleId         String?
+  /// ★ 人类可读的命中理由，写入凭证备注，回答"为什么这么记"
+  ruleReason     String?
+  ruleVersion    Int?
+  /// 该凭证整体置信度
+  confidence     Decimal? @db.Decimal(5, 4)
+
+  reviewedBy String?
+  reviewedAt DateTime?
+  /// 最近一次退回的理由（审核退回 / 过账前退回 / 反审核）
+  /// ★ 必须回显给制单人，否则"被退了却不知道为什么"，流程就卡住了
+  reviewNote String?
+  postedBy   String?
+  postedAt   DateTime?
+
+  reversedById String? /// 被哪张凭证红冲
+  reversesId   String? /// 本张红冲了哪张
+  voidReason   String?
+
+  createdBy String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  entity Entity        @relation(fields: [entityId], references: [id], onDelete: Cascade)
+  lines  JournalLine[]
+
+  /// ★ 凭证号唯一（部分唯一索引，只对 voucherNo > 0 生效）。
+  ///
+  ///   为什么不能写成 @@unique([...voucherNo])：
+  ///   草稿的 voucherNo 是 0（未编号），而 0 是一个**真实的取值**，
+  ///   于是同一期间的第二张草稿会撞唯一约束 —— 表现为"建第二张凭证就报
+  ///   系统内部错误"。我们验证过：这个 bug 会让一个期间只能存在一张草稿。
+  ///
+  ///   Prisma schema 无法表达部分索引（WHERE 子句），所以索引在迁移 SQL 里建：
+  ///     CREATE UNIQUE INDEX ... ON journal_voucher (...) WHERE "voucherNo" > 0;
+  ///
+  ///   这条索引同时保住了"凭证号在同一期间连续无重复"这个真正的约束目标。
+  @@index([entityId, voucherWord, periodYear, periodMonth, voucherNo])
+  /// ★ 幂等兜底
+  @@unique([entityId, idempotencyKey])
+  @@index([entityId, periodId, status])
+  @@index([entityId, voucherDate])
+  @@index([entityId, sourceType, sourceId])
+  @@map("journal_voucher")
+}
+
+/// 凭证号分配器（行锁表）
+/// ★ 绝不用 MAX(voucherNo)+1 —— 并发会重号
+model VoucherSequence {
+  id          String @id @default(uuid())
+  entityId    String
+  periodId    String
+  voucherWord String
+  nextNo      Int    @default(1)
+
+  @@unique([entityId, periodId, voucherWord])
+  @@map("voucher_sequence")
+}
+
+/// 分录行
+model JournalLine {
+  id       String @id @default(uuid())
+  voucherId String
+  entityId String
+  periodId String
+  lineNo   Int
+
+  accountId String
+  direction BalanceDirection
+  /// ★ 恒为正数。借贷方向由 direction 表达，绝不用负数金额。
+  amount    Decimal          @db.Decimal(18, 2)
+
+  summary String?
+
+  // ---- 辅助核算 ----
+  partnerId     String?
+  auxProject    String?
+  auxDepartment String?
+  contractId    String?
+
+  // ---- 税相关（用于申报表归集与追溯）----
+  taxRate   Decimal? @db.Decimal(6, 4)
+  taxAmount Decimal? @db.Decimal(18, 2)
+  invoiceId String?
+
+  createdAt DateTime @default(now())
+
+  voucher JournalVoucher @relation(fields: [voucherId], references: [id], onDelete: Cascade)
+  account Account        @relation(fields: [accountId], references: [id])
+  invoice Invoice?       @relation(fields: [invoiceId], references: [id])
+
+  @@index([entityId, periodId, accountId]) // 科目余额表 / 明细账
+  @@index([entityId, accountId, voucherId])
+  @@index([voucherId])
+  @@index([invoiceId])
+  @@index([entityId, partnerId])
+  @@map("journal_line")
+}
+
+/// 科目余额（按期存储，可幂等重算）
+model AccountBalance {
+  id       String @id @default(uuid())
+  entityId String
+  periodId String
+  accountId String
+
+  openingDebit  Decimal @db.Decimal(18, 2) @default(0)
+  openingCredit Decimal @db.Decimal(18, 2) @default(0)
+  debitOccurred Decimal @db.Decimal(18, 2) @default(0)
+  creditOccurred Decimal @db.Decimal(18, 2) @default(0)
+  closingDebit  Decimal @db.Decimal(18, 2) @default(0)
+  closingCredit Decimal @db.Decimal(18, 2) @default(0)
+
+  updatedAt DateTime @updatedAt
+
+  entity Entity @relation(fields: [entityId], references: [id], onDelete: Cascade)
+
+  @@unique([entityId, periodId, accountId])
+  @@index([entityId, periodId])
+  @@map("account_balance")
+}
+
+/// 月结执行记录（支持断点续跑）
+model PeriodCloseRun {
+  id       String        @id @default(uuid())
+  entityId String
+  periodId String
+  attempt  Int           @default(1)
+  status   CloseRunStatus @default(RUNNING)
+  /// 每步状态与耗时，便于断点续跑
+  steps    Json
+  startedBy String?
+  startedAt DateTime @default(now())
+  finishedAt DateTime?
+  failureReason String?
+
+  entity Entity @relation(fields: [entityId], references: [id], onDelete: Cascade)
+
+  @@index([entityId, periodId])
+  @@map("period_close_run")
+}
+
+/// 结账检查清单结果
+model PeriodCheckResult {
+  id       String @id @default(uuid())
+  entityId String
+  periodId String
+  code     String /// 检查项代码，见 shared/enums 的 PERIOD_CHECK
+  level    String /// BLOCKER | WARNING | INFO
+  passed   Boolean
+  detail   String?
+  metrics  Json?
+  checkedAt DateTime @default(now())
+
+  entity Entity @relation(fields: [entityId], references: [id], onDelete: Cascade)
+
+  @@unique([entityId, periodId, code])
+  @@map("period_check_result")
+}
+
+// =============================================================================
+//  ④ 规则与学习
+// =============================================================================
+
+/// 自动记账规则
+model JournalRule {
+  id       String      @id @default(uuid())
+  entityId String
+  /// 稳定的规则标识，用于内置规则的升级匹配
+  code     String
+  name     String
+  priority Int         @default(100) /// 数字小者先匹配
+  enabled  Boolean     @default(true)
+  trigger  RuleTrigger
+
+  /// 条件树（JSON），见 design/05 第 2.1 节
+  conditions Json
+  /// 分录模板（JSON），见 design/05 第 2.2 节
+  template   Json
+
+  confidence Decimal @db.Decimal(5, 4) @default(0.9500)
+  /// ★ 是否允许免审核直接过账。默认关闭 —— 一张错凭证的排查成本远高于点一下确认。
+  autoPost   Boolean @default(false)
+  /// 自动过账的金额上限
+  autoPostMaxAmount Decimal? @db.Decimal(18, 2)
+
+  isSystem   Boolean   @default(false)
+  hitCount   Int       @default(0)
+  lastHitAt  DateTime?
+  version    Int       @default(1)
+  remark     String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  entity Entity @relation(fields: [entityId], references: [id], onDelete: Cascade)
+
+  @@unique([entityId, code])
+  @@index([entityId, trigger, priority])
+  @@map("journal_rule")
+}
+
+/// 用户纠错沉淀 —— 让系统越用越准（L2 层）
+model ClassificationOverride {
+  id       String @id @default(uuid())
+  entityId String
+  /// 归一化特征键，如 "supplier:91310000XXXX"
+  featureKey    String
+  supplierTaxNo String?
+  keyword       String?
+  amountBucket  String? /// 金额区间桶
+
+  accountId    String
+  taxTreatment String? /// DEDUCTIBLE | NON_DEDUCTIBLE
+  hitCount     Int      @default(0)
+  lastUsedAt   DateTime?
+  /// 从哪张凭证学来的
+  createdFrom  String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  entity Entity @relation(fields: [entityId], references: [id], onDelete: Cascade)
+
+  @@unique([entityId, featureKey])
+  @@index([entityId, supplierTaxNo])
+  @@map("classification_override")
+}
+
+/// 科目 ↔ 报表/申报表行项目映射（可配置，避免硬编码）
+model AccountMapping {
+  id       String @id @default(uuid())
+  entityId String
+  /// BALANCE_SHEET | INCOME_STATEMENT | CASHFLOW | VAT_MAIN | VAT_ANNEX1 | VAT_ANNEX2 | CIT
+  purpose  String
+  itemCode String /// 报表/申报表行项目代码
+  accountId String
+  sign     Int    @default(1) /// 取数符号 +1 / -1
+
+  entity Entity @relation(fields: [entityId], references: [id], onDelete: Cascade)
+
+  @@unique([entityId, purpose, itemCode, accountId])
+  @@map("account_mapping")
+}
+
+// =============================================================================
+//  ⑤ 税务
+// =============================================================================
+
+/// 税务档案（所有可变税务参数都放这里，绝不硬编码）
+model TaxProfile {
+  id       String       @id @default(uuid())
+  entityId String       @unique
+  taxpayerType TaxpayerType @default(GENERAL)
+
+  vatFilingCycle   String @default("MONTHLY") /// MONTHLY | QUARTERLY
+  citPrepayCycle   String @default("QUARTERLY")
+  /// 小型微利企业（影响所得税优惠）
+  isSmallLowProfit Boolean @default(true)
+
+  /// 附加税费率 {city:0.07, edu:0.03, localEdu:0.02}
+  surtaxRates      Json
+  /// 六税两费减半 -> 0.5
+  surtaxReduction  Decimal? @db.Decimal(6, 4)
+  /// 城建税所在地档次：CITY 7% | COUNTY 5% | OTHER 1%
+  surtaxLocation   String   @default("CITY")
+
+  /// 进项发票认证模式：AUTO_ON_IMPORT | MANUAL
+  invoiceCertMode  String   @default("AUTO_ON_IMPORT")
+
+  /// 小微企业优惠：应纳税所得额减按比例计入
+  smallProfitDeductionRate Decimal? @db.Decimal(6, 4) /// 0.25
+  smallProfitTaxRate       Decimal? @db.Decimal(6, 4) /// 0.20
+  /// 政策文号与生效期，UI 上要展示，便于用户核对
+  policyNote       String?
+  policyEffectiveFrom DateTime? @db.Date
+  policyEffectiveTo   DateTime? @db.Date
+
+  updatedAt DateTime @updatedAt
+
+  entity Entity @relation(fields: [entityId], references: [id], onDelete: Cascade)
+
+  @@map("tax_profile")
+}
+
+/// 税期（与会计期间解耦：增值税月报、企业所得税季报）
+model TaxPeriod {
+  id       String @id @default(uuid())
+  entityId String
+  taxType  String /// VAT | SURTAX | CIT_PREPAY | STAMP_DUTY
+  year     Int
+  quarter  Int?
+  month    Int?
+  label    String /// "2025-03" 或 "2025Q1"
+  startsOn DateTime @db.Date
+  endsOn   DateTime @db.Date
+  status   String   @default("OPEN") /// OPEN | AGGREGATED | DECLARED | CLOSED
+
+  entity Entity @relation(fields: [entityId], references: [id], onDelete: Cascade)
+
+  @@unique([entityId, taxType, label])
+  @@index([entityId, taxType, year])
+  @@map("tax_period")
+}
+
+/// 发票认证/勾选记录
+model VatCertification {
+  id        String   @id @default(uuid())
+  entityId  String
+  invoiceId String
+  periodId  String /// 勾选认证所属期
+  certifiedAt DateTime @default(now())
+  certifiedBy String?
+  method    String   @default("HOOK") /// HOOK 勾选 | SCAN 扫描认证 | IMPORT 批量导入
+  deductibleTax Decimal @db.Decimal(18, 2) /// 本次可抵扣税额
+  status    String   @default("CERTIFIED") /// CERTIFIED | REVOKED
+  remark    String?
+
+  entity  Entity  @relation(fields: [entityId], references: [id], onDelete: Cascade)
+  invoice Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+
+  @@unique([invoiceId, periodId])
+  @@index([entityId, periodId])
+  @@map("vat_certification")
+}
+
+/// 增值税归集结果（申报表底稿）
+model VatPeriodAggregate {
+  id          String @id @default(uuid())
+  entityId    String
+  taxPeriodId String
+  /// 销项按税率分档：[{rate, salesExclTax, taxAmount, ...}] → 附列资料一
+  outputTax   Json
+  /// 进项按凭证类型分档 → 附列资料二
+  inputTax    Json
+  taxPayable      Decimal @db.Decimal(18, 2) @default(0)
+  taxCredited     Decimal @db.Decimal(18, 2) @default(0) /// 上期留抵
+  taxPayableFinal Decimal @db.Decimal(18, 2) @default(0)
+  /// 附加税费明细
+  surtax      Json
+  generatedAt DateTime @default(now())
+
+  entity Entity @relation(fields: [entityId], references: [id], onDelete: Cascade)
+
+  @@unique([entityId, taxPeriodId])
+  @@map("vat_period_aggregate")
+}
+
+/// 申报表实例
+model TaxFiling {
+  id          String @id @default(uuid())
+  entityId    String
+  taxType     String /// VAT | SURTAX | CIT_PREPAY | STAMP_DUTY
+  taxPeriodId String
+  status      String   @default("DRAFT") /// DRAFT | CONFIRMED | FILED
+  /// 申报表全部行项目数值
+  payload     Json
+  /// 与账上科目的勾稽校验结果
+  tieOut      Json?
+  filedAt     DateTime?
+  filedBy     String?
+  receiptNo   String? /// 申报回执号
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  entity Entity @relation(fields: [entityId], references: [id], onDelete: Cascade)
+
+  @@unique([entityId, taxType, taxPeriodId])
+  @@map("tax_filing")
+}
+
+// =============================================================================
+//  ⑥ AI 与风险
+// =============================================================================
+
+/// AI 调用日志（含成本与可复现性）
+model AiCallLog {
+  id       String  @id @default(uuid())
+  entityId String?
+  /// EXTRACT_INVOICE | EXTRACT_CONTRACT | SUGGEST_ACCOUNT | ANOMALY
+  purpose  String
+  provider String
+  model    String
+  /// packages/prompts 中的模板标识与版本
+  promptKey     String
+  promptVersion String
+  /// 输入哈希：去重调用、复现问题
+  requestHash   String
+
+  rawResponse      Json?
+  promptTokens     Int?
+  completionTokens Int?
+  costEstimate     Decimal? @db.Decimal(12, 6)
+  latencyMs        Int
+  success          Boolean
+  errorMessage     String?
+  documentId       String?
+
+  createdAt DateTime @default(now())
+
+  @@index([entityId, purpose, createdAt])
+  @@index([requestHash])
+  @@map("ai_call_log")
+}
+
+/// 抽取结果（含字段级置信度）
+model ExtractionResult {
+  id         String @id @default(uuid())
+  entityId   String
+  documentId String
+  targetType String /// INVOICE | BANK_SLIP | CONTRACT | BANK_STATEMENT
+  /// { field: { value, confidence, sourcePage, bbox } }
+  fields     Json
+  overallConfidence Decimal @db.Decimal(5, 4)
+  rawText    String?
+  aiCallLogId String?
+  schemaVersion String @default("v1")
+
+  reviewedBy  String?
+  reviewedAt  DateTime?
+  /// 人工改了什么 —— 优化提示词与规则的唯一可靠数据源
+  corrections Json?
+
+  createdAt DateTime @default(now())
+
+  entity   Entity   @relation(fields: [entityId], references: [id], onDelete: Cascade)
+  document Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@index([entityId, documentId])
+  @@map("extraction_result")
+}
+
+/// 风险规则（无需改代码即可定义）
+model RiskRule {
+  id       String @id @default(uuid())
+  entityId String
+  code     String
+  name     String
+  category RiskCategory
+  engine   String @default("SQL") /// SQL | AI | SQL+AI
+  /// 阈值与参数
+  definition Json
+  level    RiskLevel @default(WARNING)
+  enabled  Boolean   @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  entity Entity @relation(fields: [entityId], references: [id], onDelete: Cascade)
+
+  @@unique([entityId, code])
+  @@map("risk_rule")
+}
+
+/// 风险提示实例
+model RiskAlert {
+  id       String @id @default(uuid())
+  entityId String
+  ruleCode String
+  level    RiskLevel
+  category RiskCategory
+  periodId String?
+
+  subjectType String /// INVOICE | VOUCHER | PARTNER | CONTRACT | PERIOD | ACCOUNT
+  subjectId   String?
+
+  title    String
+  detail   String?
+  /// 建议动作 —— 必须给出下一步
+  suggestion String?
+  /// 具体数字证据
+  evidence Json?
+
+  status    RiskAlertStatus @default(OPEN)
+  handledBy String?
+  handledAt DateTime?
+  /// 忽略/处理理由（必填）
+  handleNote String?
+
+  createdAt DateTime @default(now())
+
+  entity Entity @relation(fields: [entityId], references: [id], onDelete: Cascade)
+
+  @@index([entityId, status, level])
+  @@index([entityId, periodId])
+  @@map("risk_alert")
+}
+
+// =============================================================================
+//  ⑦ 系统
+// =============================================================================
+
+/// 用户（自然人）
+///
+/// ★ 平台级账号，不属于任何单一主体 —— 一个人可以同时是多家公司的实控人或会计。
+///   所以「在某家公司是什么角色」不放在这里，放在 Membership。
+model User {
+  id           String   @id @default(uuid())
+  email        String   @unique
+  passwordHash String
+  displayName  String
+  phone        String?
+
+  /// 账号性质：PERSONAL 个人自用 / COMPANY_STAFF 企业员工
+  /// ★ 它只影响注册时的引导文案与默认权限预设，不决定实际权限 ——
+  ///   实际权限一律看 Membership.role，避免"账号性质"与"实际角色"两套口径打架。
+  accountType String @default("PERSONAL")
+
+  /// 平台级管理员（可跨主体查看，用于运维排障）。
+  /// 与 Membership.role=OWNER 是两件事：后者只管一家公司。
+  isPlatformAdmin Boolean @default(false)
+
+  isActive    Boolean  @default(true)
+  lastLoginAt DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  memberships Membership[]
+
+  @@map("app_user")
+}
+
+/// 用户与主体的关联（谁能进哪家公司、以什么身份）
+///
+/// ★ 为什么必须做成关系表，而不是在 User 上放一个 entityIds 字符串数组：
+///   ① 数组没有外键 —— 可以塞进任何不存在的 id，删了主体也不会清理
+///   ② 数组表达不了"在这家公司是什么角色"，而角色是权限判定的核心
+///   ③ 权限校验要按 (userId, entityId) 查一行，关系表上一个联合唯一索引就够，
+///      数组则只能全表扫
+model Membership {
+  id       String @id @default(uuid())
+  userId   String
+  entityId String
+
+  /// OWNER 实控人（全部权限，含删除主体）
+  /// ACCOUNTANT 会计（记账、结账、报税，不能删除主体）
+  /// VIEWER 只读（看账、看报表，不能改）
+  role String @default("OWNER")
+
+  /// 谁邀请进来的（实控人注册时为空）
+  invitedBy String?
+  isActive  Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  entity Entity @relation(fields: [entityId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, entityId])
+  @@index([entityId, role])
+  @@index([userId, isActive])
+  @@map("membership")
+}
+
+/// 审计日志：只追加，不修改（数据库触发器强制）
+model AuditLog {
+  id       String  @id @default(uuid())
+  entityId String?
+  /// 操作人。
+  ///
+  /// ★ 刻意**不加**外键约束，保留为裸字符串：
+  ///   审计日志是"只追加、不可改"的证据链，它必须在用户被删除后依然存在 ——
+  ///   加了外键就只能写真实用户 id，且删用户要么失败要么把日志一起删掉，
+  ///   两者都会破坏审计完整性。系统用户（system）也会写进这里。
+  userId   String?
+  /// 操作人显示名（冗余存一份）：用户改名或删号后，历史日志仍能显示"当时是谁"
+  userName String?
+  /// CREATE | UPDATE | DELETE | POST | APPROVE | CLOSE | REOPEN | EXPORT | CONFIG
+  /// | LOGIN | LOGOUT | LOGIN_FAILED | REGISTER | PASSWORD_CHANGE | MEMBER_ADD | MEMBER_ROLE
+  action      String
+  subjectType String
+  subjectId   String
+  beforeData  Json?
+  afterData   Json?
+  /// 关键操作必填理由
+  reason    String?
+  ip        String?
+  userAgent String?
+
+  createdAt DateTime @default(now())
+
+  @@index([entityId, subjectType, subjectId])
+  @@index([createdAt])
+  @@map("audit_log")
+}
+
+/// 后台作业队列（PostgreSQL 即队列：FOR UPDATE SKIP LOCKED）
+model JobQueue {
+  id       String    @id @default(uuid())
+  entityId String?
+  /// EXTRACT_DOCUMENT | AUTO_DRAFT_INVOICE | REBUILD_BALANCE | RISK_SCAN | ...
+  kind     String
+  payload  Json
+  status   JobStatus @default(PENDING)
+  priority Int       @default(100)
+
+  attempts    Int      @default(0)
+  maxAttempts Int      @default(3)
+  lockedBy    String?
+  lockedAt    DateTime?
+  availableAt DateTime @default(now())
+  lastError   String?
+  result      Json?
+
+  createdAt  DateTime  @default(now())
+  finishedAt DateTime?
+
+  @@index([status, availableAt, priority])
+  @@map("job_queue")
+}
+
+/// 系统配置（税率表、开关等可变参数）
+model SystemConfig {
+  id       String @id @default(uuid())
+  entityId String?
+  key      String
+  value    Json
+  remark   String?
+
+  updatedAt DateTime @updatedAt
+
+  @@unique([entityId, key])
+  @@map("system_config")
+}
+
+
+// =============================================================================
+//  ⑧ 历史数据重建
+// =============================================================================
+
+/// 导入批次：一次上传的全部记录
+// ============================================================================
+//  税务政策库（月度检索政策的落点）
+// ============================================================================
+
+/// 检索任务的一次执行记录
+///
+/// ★ 每次执行都留痕：什么时候跑的、查了哪些来源、拿到几条、有没有失败。
+///   政策检索最忌讳"看起来跑了但什么都没拿到" —— 没有执行记录就无法分辨
+///   "本期确实没有新政策" 与 "抓取全挂了"。
+model TaxPolicyFetchRun {
+  id       String @id @default(uuid())
+  /// 报税地（如 CN-JL-JL 吉林市 / CN-GENERAL 国家层面）
+  jurisdiction String
+  startedAt    DateTime  @default(now())
+  finishedAt   DateTime?
+  /// SUCCESS | PARTIAL | FAILED
+  status       String    @default("RUNNING")
+  sourcesTried   Int @default(0)
+  sourcesFailed  Int @default(0)
+  policiesFound  Int @default(0)
+  policiesNew    Int @default(0)
+  policiesChanged Int @default(0)
+  /// 每个来源的结果明细：[{source, ok, httpStatus?, itemCount, error?}]
+  sourceResults Json?
+  warnings      Json?
+  errorMessage  String?
+  /// 是否由定时任务自动触发
+  triggeredBy   String @default("SCHEDULED")
+
+  createdAt DateTime @default(now())
+
+  @@index([jurisdiction, startedAt])
+  @@map("tax_policy_fetch_run")
+}
+
+/// 一条税务政策
+model TaxPolicyRecord {
+  id String @id @default(uuid())
+
+  /// 报税地：政策有地域性（附加税费率、地方优惠各地不同）
+  jurisdiction String
+  /// 发布机关（如"财政部 税务总局"、"吉林省税务局"）
+  issuer String?
+
+  /// 政策标题（原文照抄，不改写 —— 改写会引入理解偏差）
+  title String
+  /// 官方来源链接
+  sourceUrl String
+  /// 来源站点名（便于判断权威性）
+  sourceName String?
+  /// 文号（如"财政部 税务总局公告2023年第12号"）
+  documentNo String?
+
+  /// 发文日期
+  publishedAt DateTime? @db.Date
+  /// 施行日期（★ 判断"现在适用哪条"的关键）
+  effectiveFrom DateTime? @db.Date
+  /// 失效日期（null 表示未见明确失效）
+  effectiveTo DateTime? @db.Date
+
+  /// 政策正文原文（截断保存，用于追溯 —— 只存摘要会丢失免责与限定条件）
+  rawExcerpt String?
+  /// 抓取到的完整原文（可能很大，单独存放）
+  rawContent String?
+  /// ★ 必须记录抓取时间：政策会改，不同时间看到的同一链接内容可能不同
+  fetchedAt DateTime @default(now())
+
+  /// 内容哈希：判断"这条政策有没有变过"
+  contentHash String
+
+  /// ★ 政策状态。只有基于 effectiveFrom/effectiveTo 推算，不做主观判断
+  /// EFFECTIVE 现行有效 | UPCOMING 尚未施行 | EXPIRED 已失效
+  status String @default("UPCOMING")
+
+  /// 与哪些税种相关：VAT / CIT / SURTAX / STAMP_DUTY / IIT / OTHER
+  taxTypes String[]
+  /// 命中的关键词（便于用户快速判断是否与自己相关）
+  keywords String[]
+
+  /// ★ 需要人工阅读确认（系统不做适用性判断）
+  needsReview Boolean @default(true)
+  /// 人工确认后可以置为已读
+  reviewedAt DateTime?
+  reviewedBy String?
+  notes String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  /// 同一个来源链接 + 报税地只保留一条，内容变化时更新
+  @@unique([jurisdiction, sourceUrl])
+  @@index([jurisdiction, effectiveFrom])
+  @@index([status, effectiveFrom])
+  @@index([needsReview])
+  @@map("tax_policy_record")
+}
+model HistoryImportBatch {
+  id       String            @id @default(uuid())
+  entityId String
+  sourceType HistorySourceType
+  fileName String?
+  fileHash String? /// 文件内容哈希，防止同文件重复导入
+  rowCount Int               @default(0)
+  /// AI 推断出的表头映射：[{source:"开票日期", target:"invoiceDate", confidence:0.98, reason:"..."}]
+  columnMapping Json?
+  status   ImportBatchStatus @default(UPLOADED)
+  errorLog Json?
+  importedBy String?
+  createdAt DateTime @default(now())
+  finishedAt DateTime?
+
+  entity  Entity                 @relation(fields: [entityId], references: [id], onDelete: Cascade)
+  records HistoryInvoiceRecord[]
+  filings HistoryFilingRecord[]
+  statements FinancialStatementRecord[]
+
+  @@unique([entityId, fileHash])
+  @@index([entityId, sourceType, createdAt])
+  @@map("history_import_batch")
+}
+
+/// 历史发票明细（销项 / 进项）
+model HistoryInvoiceRecord {
+  id       String             @id @default(uuid())
+  entityId String
+  batchId  String?
+  direction InvoiceDirection /// 复用 OUTPUT 销项 / INPUT 进项
+  kind     HistoryInvoiceKind @default(SPECIAL_VAT)
+
+  invoiceCode   String?
+  invoiceNumber String?
+  invoiceDate   DateTime      @db.Date
+  periodYear    Int
+  periodMonth   Int
+
+  counterpartyName String
+  counterpartyTaxNo String?
+
+  amountExclTax Decimal @db.Decimal(18, 2)
+  taxRate       Decimal @db.Decimal(6, 4) @default(0)
+  taxAmount     Decimal @db.Decimal(18, 2)
+  amountInclTax Decimal @db.Decimal(18, 2)
+
+  /// 该票是否已勾选认证/已抵扣（用户导入的"已勾稽进项发票"字段）
+  isCertified   Boolean @default(false)
+  /// 该票是否已用于税前扣除（缺票成本需要纳税调增）
+  isDeducted    Boolean @default(true)
+  isRedFlushed  Boolean @default(false)
+
+  /// 票面品名摘要（用于 AI 归类）
+  itemSummary String?
+  /// AI 归类的费用/存货类别（如 办公费 / 差旅费 / 原材料），人工可改
+  aiCategory  String?
+  aiConfidence Decimal? @db.Decimal(5, 4)
+
+  /// 与该记录核对的申报记录（按期间+税种）
+  reconPeriodLabel String?
+  reconStatus HistoryReconStatus @default(PENDING)
+  reconNote   String?
+  /// ★ 去重键：同主体+方向+代码+号码+红冲标记
+  dedupHash   String
+
+  createdAt DateTime @default(now())
+
+  entity Entity              @relation(fields: [entityId], references: [id], onDelete: Cascade)
+  batch  HistoryImportBatch? @relation(fields: [batchId], references: [id], onDelete: SetNull)
+
+  @@unique([entityId, dedupHash])
+  @@index([entityId, direction, periodYear, periodMonth])
+  @@index([entityId, reconStatus])
+  @@map("history_invoice_record")
+}
+
+/// 历史申报记录（增值税 / 所得税 / 附加税费）
+model HistoryFilingRecord {
+  id       String             @id @default(uuid())
+  entityId String
+  batchId  String?
+  filingType HistoryFilingType
+
+  periodLabel String /// "2023-01" 月报 | "2023Q1" 季报 | "2023" 年报
+  periodYear  Int
+  periodMonth Int?
+  periodQuarter Int?
+
+  /// 销售额（不含税）—— 增值税申报表主表第1行 + 第5行
+  salesExclTax Decimal? @db.Decimal(18, 2)
+  /// 销项税额 —— 主表第11行
+  outputTax    Decimal? @db.Decimal(18, 2)
+  /// 进项税额 —— 主表第12行
+  inputTax     Decimal? @db.Decimal(18, 2)
+  /// 进项税额转出 —— 主表第14行
+  inputTaxTransferOut Decimal? @db.Decimal(18, 2)
+  /// 上期留抵
+  taxCreditBroughtForward Decimal? @db.Decimal(18, 2)
+  /// 应纳税额合计 —— 主表第24行
+  taxPayable   Decimal? @db.Decimal(18, 2)
+  /// 本期已缴税额 —— 主表第27行
+  taxPaid      Decimal? @db.Decimal(18, 2)
+  /// 期末未缴税额 —— 主表第32行
+  taxUnpaidEnd Decimal? @db.Decimal(18, 2)
+  /// 城建税 + 教育费附加 + 地方教育附加 合计
+  surtax       Decimal? @db.Decimal(18, 2)
+
+  /// 企业所得税：营业收入 / 营业成本 / 利润总额 / 实际应纳所得税额
+  citRevenue      Decimal? @db.Decimal(18, 2)
+  citCost         Decimal? @db.Decimal(18, 2)
+  citProfitBefore Decimal? @db.Decimal(18, 2)
+  citTaxPayable   Decimal? @db.Decimal(18, 2)
+  citTaxPaid      Decimal? @db.Decimal(18, 2)
+  /// 纳税调整增加额（无票成本等）
+  citAdjustUp     Decimal? @db.Decimal(18, 2)
+
+  rawRow Json?
+  reconStatus HistoryReconStatus @default(PENDING)
+  reconNote   String?
+
+  createdAt DateTime @default(now())
+
+  entity Entity              @relation(fields: [entityId], references: [id], onDelete: Cascade)
+  batch  HistoryImportBatch? @relation(fields: [batchId], references: [id], onDelete: SetNull)
+
+  @@unique([entityId, filingType, periodLabel])
+  @@index([entityId, periodYear])
+  @@map("history_filing_record")
+}
+
+/// 历史财务报表（资产负债表 / 利润表 / 现金流量表）
+///
+/// 为什么值得单独建表：
+///   税务申报表能推出"应交多少税"，但推不出"资产与负债的实际构成"。
+///   如果能拿到代账公司出的资产负债表，期初建账就有了一半的真实数据 ——
+///   货币资金、存货、固定资产、实收资本这些"算不出来只能问人"的科目，
+///   直接从表里取数即可，不必倒轧。
+///   所以财务报表是历史重建里**价值最高的一类输入**。
+model FinancialStatementRecord {
+  id       String                 @id @default(uuid())
+  entityId String
+  batchId  String?
+  statementType FinancialStatementType
+
+  /// 报表日期（资产负债表为时点数）
+  statementDate DateTime @db.Date
+  /// 所属年度 / 月份，便于按年归集
+  fiscalYear Int
+  fiscalMonth Int?
+
+  /// 数据来源：人工提供 / 识别 / 手工录入
+  source   String @default("RECOGNITION")
+  /// 报表口径：一般企业 / 小企业会计准则
+  standard String @default("SMALL_ENTERPRISE_2013")
+
+  /// ★ 报表行项目：{ itemCode: { label, endBalance, beginBalance } }
+  ///   保留原始行项目而不强行映射科目 —— 不同版本报表行次有差异，
+  ///   映射留到重建阶段按需做，原始数据先如实存下来。
+  items Json
+
+  /// 关键合计项，便于快速取用与核对
+  totalAssets        Decimal? @db.Decimal(18, 2)
+  totalLiabilities   Decimal? @db.Decimal(18, 2)
+  totalEquity        Decimal? @db.Decimal(18, 2)
+  revenue            Decimal? @db.Decimal(18, 2)
+  cost               Decimal? @db.Decimal(18, 2)
+  profitBeforeTax    Decimal? @db.Decimal(18, 2)
+  netProfit          Decimal? @db.Decimal(18, 2)
+
+  /// 完整性自检：资产 = 负债 + 所有者权益
+  isBalanced       Boolean @default(true)
+  balanceDifference Decimal? @db.Decimal(18, 2)
+
+  rawRow Json?
+  /// 识别来源单据（便于回看原件）
+  documentId String?
+  reconNote  String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  entity Entity              @relation(fields: [entityId], references: [id], onDelete: Cascade)
+  batch  HistoryImportBatch? @relation(fields: [batchId], references: [id], onDelete: SetNull)
+
+  @@unique([entityId, statementType, statementDate])
+  @@index([entityId, fiscalYear])
+  @@map("financial_statement_record")
+}
+
+/// 年度重建结果（每个历史年度一条，记录推演过程与依据）
+model HistoryReconstruction {
+  id       String @id @default(uuid())
+  entityId String
+  year     Int
+  status   ReconstructionStatus @default(PENDING)
+  /// 重建过程中的步骤状态，支持断点续跑
+  steps    Json?
+
+  // ---- 发票侧（有据可查）----
+  salesInvoiceCount    Int     @default(0)
+  salesAmountExclTax   Decimal @db.Decimal(18, 2) @default(0)
+  salesTaxAmount       Decimal @db.Decimal(18, 2) @default(0)
+  purchaseInvoiceCount Int     @default(0)
+  purchaseAmountExclTax Decimal @db.Decimal(18, 2) @default(0)
+  purchaseTaxAmount    Decimal @db.Decimal(18, 2) @default(0)
+  certifiedTaxAmount   Decimal @db.Decimal(18, 2) @default(0)
+
+  // ---- 申报侧（有据可查）----
+  declaredSalesExclTax Decimal? @db.Decimal(18, 2)
+  declaredOutputTax    Decimal? @db.Decimal(18, 2)
+  declaredInputTax     Decimal? @db.Decimal(18, 2)
+  declaredTaxPayable   Decimal? @db.Decimal(18, 2)
+  declaredTaxPaid      Decimal? @db.Decimal(18, 2)
+  declaredSurtax       Decimal? @db.Decimal(18, 2)
+
+  // ---- 核对结果 ----
+  /// 发票聚合 vs 申报表 的差异
+  salesDiff   Decimal? @db.Decimal(18, 2)
+  purchaseDiff Decimal? @db.Decimal(18, 2)
+  /// 差异说明（发票口径与申报口径可能不同：有未开票收入、跨期认证等）
+  reconciliationNote String?
+
+  // ---- 倒轧推算（★ 推算项，需人工确认）----
+  /// 税前利润（取自所得税年报）
+  profitBeforeTax Decimal? @db.Decimal(18, 2)
+  /// 推算的营业成本 = 营业收入 − 利润总额 − 费用估算
+  derivedCost     Decimal? @db.Decimal(18, 2)
+  /// 有票成本（进项发票里已用于税前扣除的部分）
+  invoicedCost    Decimal? @db.Decimal(18, 2)
+  /// ★ 无票成本 = 推算成本 − 有票成本（汇算清缴需纳税调增的部分）
+  costWithoutInvoice Decimal? @db.Decimal(18, 2)
+
+  incomeTaxExpense Decimal? @db.Decimal(18, 2)
+  incomeTaxPayable Decimal? @db.Decimal(18, 2)
+  netProfit        Decimal? @db.Decimal(18, 2)
+
+  /// 需要人工补录的项 [{ field, label, reason, suggestion }]
+  requiredInputs Json?
+  /// AI 的分析与提示
+  aiSummary String?
+  aiWarnings Json?
+
+  confirmedBy String?
+  confirmedAt DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  entity Entity @relation(fields: [entityId], references: [id], onDelete: Cascade)
+
+  @@unique([entityId, year])
+  @@index([entityId, status])
+  @@map("history_reconstruction")
+}
+
+/// 期初建账方案（重建的最终产出，人工确认后才生成期初凭证）
+model OpeningBalanceProposal {
+  id       String @id @default(uuid())
+  entityId String
+  /// 方案对应的启用期间（期初余额落在该期间）
+  targetPeriodId String
+  targetYear     Int
+  targetMonth    Int
+  status OpeningProposalStatus @default(DRAFT)
+
+  totalDebit  Decimal @db.Decimal(18, 2) @default(0)
+  totalCredit Decimal @db.Decimal(18, 2) @default(0)
+  /// 借贷差额（必须为 0 才能生成凭证）
+  difference  Decimal @db.Decimal(18, 2) @default(0)
+
+  /// 现金科目采用哪种口径：DECLARED 用户提供银行余额 | DERIVED 由恒等式倒轧
+  cashBasis String @default("DERIVED")
+  /// 用户提供的实际银行/现金余额（若有）
+  actualCashBalance Decimal? @db.Decimal(18, 2)
+
+  aiSummary String?
+  warnings  Json?
+  /// 生成期初凭证后回填
+  voucherId String?
+  postedAt  DateTime?
+
+  confirmedBy String?
+  confirmedAt DateTime?
+  createdBy   String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  entity  Entity                     @relation(fields: [entityId], references: [id], onDelete: Cascade)
+  lines   OpeningBalanceLine[]
+  sources OpeningBalanceSourceRef[]
+
+  @@index([entityId, status])
+  @@map("opening_balance_proposal")
+}
+
+/// 期初方案的每一行（★ 每行都必须标明来源，让人一眼区分"有据"与"推算"）
+model OpeningBalanceLine {
+  id          String @id @default(uuid())
+  proposalId  String
+  lineNo      Int
+  accountId   String
+  accountCode String
+  accountName String
+
+  direction BalanceDirection
+  amount    Decimal          @db.Decimal(18, 2)
+
+  /// ★ 数据来源，决定这一行有多可信
+  source     OpeningSource
+  /// 人类可读的来源说明，如 "取 2024 年 12 月增值税申报表主表第32行"
+  sourceNote String
+  /// 该行涉及的金额构成（如 应收账款 = 各年销项价税合计 − 已收款）
+  breakdown  Json?
+  /// 是否需要人工确认或调整
+  needsReview Boolean @default(false)
+
+  proposal OpeningBalanceProposal @relation(fields: [proposalId], references: [id], onDelete: Cascade)
+
+  @@index([proposalId])
+  @@map("opening_balance_line")
+}
+
+/// 期初方案与原始数据的溯源关联（回答"这个数字从哪来"）
+model OpeningBalanceSourceRef {
+  id         String @id @default(uuid())
+  proposalId String
+  /// HISTORY_INVOICE | HISTORY_FILING | HISTORY_RECONSTRUCTION | MANUAL | AI
+  refType    String
+  refId      String?
+  /// 说明，如 "2023年销项发票 128 张，价税合计 1,234,567.89"
+  note       String
+  amount     Decimal? @db.Decimal(18, 2)
+
+  proposal OpeningBalanceProposal @relation(fields: [proposalId], references: [id], onDelete: Cascade)
+
+  @@index([proposalId])
+  @@map("opening_balance_source_ref")
+}

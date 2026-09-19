@@ -1,0 +1,23 @@
+packages:
+  - 'apps/*'
+  - 'packages/*'
+
+# pnpm 11：允许执行安装脚本的依赖
+# v11 把 onlyBuiltDependencies / neverBuiltDependencies / ignoredBuiltDependencies
+# 合并成了 allowBuilds 映射（{ 包名: true | false }）
+#
+# 原则：只有真正需要「下载二进制 / 编译原生模块」的包才允许执行安装脚本，
+#      其余一律显式 false —— 供应链安全上，能不开脚本就不开。
+allowBuilds:
+  # --- 需要下载平台二进制 ---
+  esbuild: true # Vite / Vitest / tsx 的构建核心
+  prisma: true # Prisma CLI
+  '@prisma/client': true # 查询引擎
+  '@prisma/engines': true # 查询引擎二进制
+  # --- 需要编译原生模块 ---
+  bcrypt: true # 密码哈希
+  # --- 明确禁止：仅遥测或由系统提供 ---
+  puppeteer: false # Chromium 由系统包提供（见 docker/dev/Dockerfile）
+  '@nestjs/core': false # postinstall 仅打印赞助信息
+  '@scarf/scarf': false # 遥测上报
+  vue-demi: true            # Pinia 的 Vue2/3 兼容层，需要生成一次存根

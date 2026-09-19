@@ -1,0 +1,390 @@
+/* =============================================================================
+ *  主题配色 —— 低饱和 · 商用质感
+ *  ============================================================================
+ *  命局：甲子年 丁丑月 **丙寅日** 戊子时
+ *
+ *  ★ 2026-09 更正：此前记为「甲子日、日主甲木」，据此把火定为用神。
+ *    核对儒略日后日柱应为丙寅、日主是丙火 —— 于是喜用整体改变：
+ *
+ *    丙火日主生于丑月（腊月），天寒地冻，非木不生。
+ *
+ *    用神 木        —— 生火暖局，且丑月木进气，是全局唯一的生源
+ *    喜神 火        —— 木生火、火暖局，日主得助
+ *    闲神 土        —— 火生土而泄火之力，仅作点缀与中性偏暖
+ *    忌神 水、金    —— 水克火且冬水本旺；金生水而助寒
+ *
+ *  ---------------------------------------------------------------------------
+ *  配色策略（与"高饱和文化感"版本的根本区别）
+ *  ---------------------------------------------------------------------------
+ *  ① 骨架中性：中性色一律取近真灰（饱和 ≤8%），不带色相。
+ *     这是商用质感的关键 —— 界面主体必须"无色"，否则整屏泛棕泛黄，立刻显旧。
+ *
+ *  ② 颜色克制：主色（木）饱和 30%、辅色（火）24%、点缀（土）20%，全板 ≤31%。
+ *     五行意象由「色相」承载，不由「饱和度」堆：
+ *       木 = 156 度松绿   火 = 14 度赤陶   土 = 48 度赭黄
+ *     低饱和的松绿依然是木。
+ *
+ *  ③ 可读性优先：所有承载文字的色均过 WCAG AA（>=4.5:1），
+ *     且逐令牌校验过"色相与五行归属一致"，由 tools/build-palette.mjs 完成，
+ *     改色后请重跑该脚本并同步本文件与 tools/palette.json。
+ *
+ *  ---------------------------------------------------------------------------
+ *  ★ 命名说明：`--bk-wood-*` / `--bk-fire-*` 表达的是"这条色阶属于哪个五行"，
+ *    不是"谁是主色"。改喜用只换哪条色阶当主色，变量名保持不变 ——
+ *    全站有 360 多处引用这些变量，为改角色去重命名只会引入大量无谓风险。
+ *    真正的主色由下面 Element Plus 的 --el-color-primary 指向哪一个决定。
+ *
+ *  命理依据见 docs/主题配色-八字喜用.md。
+ * ========================================================================== */
+
+:root {
+  /* ---- 木 · 主色（用神）色相 156 度，饱和上限 30% ---- */
+  --bk-wood-50: #f5faf8;
+  --bk-wood-100: #ebf4f1;
+  --bk-wood-200: #d2e5dd;
+  --bk-wood-300: #a3c8b9;
+  --bk-wood-400: #5ea186;
+  --bk-wood-500: #376754; /* 主色：低饱和松绿 */
+  --bk-wood-600: #2d5344;
+  --bk-wood-700: #223f33;
+
+  /* ---- 火 · 辅色（喜神）色相 14 度，饱和上限 26% ---- */
+  --bk-fire-50: #f9f6f5;
+  --bk-fire-100: #f4eeec;
+  --bk-fire-200: #e5dad6;
+  --bk-fire-300: #cfbbb4;
+  --bk-fire-400: #b49288;
+  --bk-fire-500: #966a5c; /* 辅色：低饱和赤陶（用于 UI 元素）*/
+  --bk-fire-600: #835b4e; /* 文字用：对白 5.88，达 AA */
+  --bk-fire-700: #67463c;
+
+  /* ---- 土 · 点缀（闲神）色相 48 度，饱和上限 21% ---- */
+  --bk-earth-50: #f7f6f3;
+  --bk-earth-100: #f3f2ed;
+  --bk-earth-200: #e4e2d8;
+  --bk-earth-300: #c9c4b1;
+  --bk-earth-400: #a49c79;
+  --bk-earth-500: #847b58; /* 点缀色（用于 UI 元素）*/
+  --bk-earth-600: #696244; /* 文字用：对白 6.12，达 AA */
+  --bk-earth-700: #4d4832;
+
+  /* ---- 中性 · 近真灰骨架（饱和 ≤8%，商用质感来源）---- */
+  --bk-ink: #2a2a2d;
+  --bk-ink-2: #636369;
+  --bk-ink-3: #909098;
+  --bk-line: #e7e7e9;
+  --bk-line-2: #f1f1f3;
+  --bk-surface: #ffffff;
+  --bk-page-bg: #fafafa;
+
+  /* ---- 侧边栏 · 近真灰深色（不带色相）---- */
+  --bk-aside-bg: #252528;
+  --bk-aside-bg-2: #1b1b1d;
+  --bk-aside-text: #c7c7cc;
+  --bk-aside-text-dim: #909098;
+
+  /* ---- 记账语义色 ---- */
+  --bk-debit: #946157; /* 借方：低饱和火红（喜神）*/
+  --bk-credit: #34604e; /* 贷方：低饱和木绿（用神），与借方成阴阳对照 */
+  --bk-warn: #696244; /* 警告文字（达 AA）*/
+  --bk-warn-accent: #847b58; /* 警告 UI 元素 */
+
+  /* ---- 中国传统纹样（暗纹）的填充色 ----
+     取深木绿：与主色同源，压在白底上不刺眼，也不会像纯黑那样死板。
+     单独给一个令牌，是为了让纹样能整体换色调而不必去改组件里的路径。 */
+  --bk-pattern-fill: #223f33;
+
+  /* ---- 兼容别名：颜色令牌里叫 earth600，样式里曾用 earth-500-text ---- */
+  --bk-earth-500-text: var(--bk-earth-600);
+
+  /* ---- 深底上的品牌用色 ----
+     侧边栏、登录页品牌区都是近真灰深底，主色阶 500 放上去对比度只有约 2:1。
+     这两个变量由 preferences store 在 apply() 时按当前主/辅色实时推导，
+     这里的默认值只是首次渲染（尚未拉到偏好）时的兜底。 */
+  --bk-on-dark-wood: #5ea186;
+  --bk-on-dark-fire: #b49288;
+
+  --bk-danger: #8c534f;
+  --bk-ok: #34604e;
+
+  /* ---- 金额等宽字体 ---- */
+  --bk-money-font: 'Consolas', 'Menlo', 'DejaVu Sans Mono', 'Courier New', monospace;
+}
+
+/*
+ * ★ 前后顺序很重要，而开发态与生产态的默认顺序**恰好相反**。
+ *
+ *   实测（CDP 查 document.styleSheets）：开发态下 `--el-color-primary` 有三条声明，
+ *   顺序是
+ *       ElementPlus(#409eff) → theme.css(var(--bk-wood-500)) → ElementPlus(#409eff)
+ *   **Element Plus 那份排在最后**，所以同特异度下它赢，整套按钮配色失效。
+ *
+ *   原因：vite.config.ts 用了 unplugin-vue-components 的 ElementPlusResolver 做按需引入，
+ *   每个组件自己的样式在**运行时**注入，晚于 main.ts 里的静态 import。
+ *   生产构建里两者都在打包期按 import 顺序落盘，所以 dist 是对的 ——
+ *   这正是「同一份 CSS 只在 dev 坏」这类最难查的问题。
+ *
+ *   解决办法在 vite.config.ts（dev 下关掉按需样式，只留 main.ts 那一次全量引入），
+ *   而不是在这里抬特异度或加 @layer：
+ *   包 @layer 反而更糟 —— 未分层样式**优先于**分层样式，而 Element Plus 那份正是
+ *   未分层的，包层等于把主色拱手让给它（实测确认：包层后仍解析成 #409eff）。
+ */
+/* =============================================================================
+ *  Element Plus 主题变量覆盖
+ *  ============================================================================
+ *  必须在 element-plus/dist/index.css 之后引入才能生效（见 main.ts）。
+ *  自定义属性必须在 :root 下声明 —— 写在 .el-button 等选择器里不会级联下去。
+ * ========================================================================== */
+:root {
+  /* 主色 = 木（用神）。改喜用时**只需改这一段**指向哪条色阶 */
+  --el-color-primary: var(--bk-wood-500);
+  --el-color-primary-light-3: var(--bk-wood-400);
+  --el-color-primary-light-5: var(--bk-wood-300);
+  --el-color-primary-light-7: var(--bk-wood-200);
+  --el-color-primary-light-8: var(--bk-wood-100);
+  --el-color-primary-light-9: var(--bk-wood-50);
+  --el-color-primary-dark-2: var(--bk-wood-600);
+
+  /* 成功态与主色同源（都是木），靠深浅区分 */
+  --el-color-success: var(--bk-wood-600);
+  --el-color-success-light-3: var(--bk-wood-400);
+  --el-color-success-light-5: var(--bk-wood-300);
+  --el-color-success-light-7: var(--bk-wood-200);
+  --el-color-success-light-8: var(--bk-wood-100);
+  --el-color-success-light-9: var(--bk-wood-50);
+  --el-color-success-dark-2: var(--bk-wood-700);
+
+  --el-color-warning: var(--bk-warn-accent);
+  --el-color-warning-light-3: var(--bk-earth-400);
+  --el-color-warning-light-5: var(--bk-earth-300);
+  --el-color-warning-light-7: var(--bk-earth-200);
+  --el-color-warning-light-8: var(--bk-earth-100);
+  --el-color-warning-light-9: var(--bk-earth-50);
+  --el-color-warning-dark-2: var(--bk-earth-600);
+
+  --el-color-danger: var(--bk-danger);
+  --el-color-error: var(--bk-danger);
+  --el-color-info: var(--bk-ink-3);
+  --el-color-info-light-9: #f6f6f7;
+  --el-color-info-light-8: #e7e7e9;
+
+  --el-text-color-primary: var(--bk-ink);
+  --el-text-color-regular: var(--bk-ink-2);
+  --el-text-color-secondary: var(--bk-ink-3);
+  --el-text-color-placeholder: #b0b0b6;
+
+  --el-border-color: var(--bk-line);
+  --el-border-color-light: var(--bk-line-2);
+  --el-border-color-lighter: var(--bk-line-2);
+  --el-border-color-extra-light: #f7f7f8;
+
+  --el-fill-color-blank: var(--bk-surface);
+  --el-fill-color-light: #fafafa;
+  --el-fill-color-lighter: #fcfcfc;
+  --el-bg-color: var(--bk-surface);
+  --el-bg-color-page: var(--bk-page-bg);
+  --el-bg-color-overlay: var(--bk-surface);
+
+  --el-border-radius-base: 5px;
+  --el-font-family: 'PingFang SC', 'Microsoft YaHei', 'Hiragino Sans GB', system-ui, sans-serif;
+}
+
+/* =============================================================================
+ *  Element Plus 组件级显式映射
+ *
+ *  ★★ 整段包在 @layer 里 —— 这是唯一能**与加载顺序无关**地压过
+ *     Element Plus 的办法，实测出来的结论：
+ *
+ *       开发服务器下，Element Plus 的样式表会被加载**两次**
+ *       （main.ts 里的静态 import 一次，Vite 运行时又注入一次），
+ *       而第二次注入**排在 theme.css 之后**。
+ *       于是无论我把特异度抬多高都没用 ——
+ *       同特异度拼顺序、顺序又不可控，用 CDP 查 matchedStyles 能看到
+ *       最终生效的仍是 Element Plus 那份（--el-button-bg-color: #409eff）。
+ *
+ *       改用级联层之后：未分层的样式永远输给分层里的样式（不论特异度），
+ *       所以这一段一定生效；同时 Element Plus 自己没有用 @layer，
+ *       不会被反过来干扰。
+ *
+ *     ★ 注意：只把**组件级变量映射**放进层里。
+ *       :root 上的 --el-color-primary / --el-text-color-* 那些不能进层 ——
+ *       一旦进层，没分层的 Element Plus 默认值就会把它们压掉。
+ * ============================================================================
+ *  只覆盖 --el-color-primary 不够：按钮/tag 等组件内部还会走
+ *  --el-button-* / --el-tag-* 这一层局部变量，不一定回退到全局主题色，
+ *  表现为"主按钮还是默认蓝"。这里显式把组件局部变量也指到主题色。
+ *
+ *  ★ 为什么要写成 `:where(.el-button).el-button:where(.el-button--primary)`：
+ *
+ *    Element Plus 2.9 的 `.el-button--primary` 里直接声明了
+ *    `--el-button-bg-color: var(--el-color-primary)`，特异度是 **(0,2,0)**；
+ *    基类 `.el-button` 也声明同名变量，特异度 (0,1,0)。
+ *    我原先直接写 `.el-button--primary`（同为 0,2,0），于是**同特异度拼顺序**，
+ *    而顺序并不可靠：
+ *      · 生产构建：theme.css 在 element-plus 之后 → 我赢
+ *      · 开发服务器：Element Plus 由 Vite 运行时注入，**排在我后面** → 它赢
+ *    实测踩到的就是这个：dev 下登录按钮一直是默认蓝，而同一份 CSS 在 dist 里
+ *    却是好的。这种"只在某种加载方式下失效"的问题最难查。
+ *
+ *    现在的写法：`:where(...)` 特异度为 0、不贡献权重，中间的 `.el-button`
+ *    补一个类，于是
+ *      变体       :where(.el-button) .el-button :where(.el-button--primary)          = (0,2,0)
+ *      plain/text 前面再加 .is-plain / .is-text                                       = (0,3,0)
+ *    分别比 Element Plus 高一级，**与任何顺序无关地稳定胜出**。
+ *    :where() 自身不计权重，所以不会把规则抬得过高而误伤别处。
+ * ========================================================================== */
+
+:where(.el-button).el-button:where(.el-button--primary) {
+  --el-button-bg-color: var(--bk-wood-500);
+  --el-button-border-color: var(--bk-wood-500);
+  --el-button-hover-bg-color: var(--bk-wood-400);
+  --el-button-hover-border-color: var(--bk-wood-400);
+  --el-button-active-bg-color: var(--bk-wood-600);
+  --el-button-active-border-color: var(--bk-wood-600);
+  --el-button-text-color: #fff;
+}
+
+:where(.el-button).el-button:where(.el-button--success) {
+  --el-button-bg-color: var(--bk-wood-600);
+  --el-button-border-color: var(--bk-wood-600);
+  --el-button-hover-bg-color: var(--bk-wood-500);
+  --el-button-hover-border-color: var(--bk-wood-500);
+  --el-button-active-bg-color: var(--bk-wood-700);
+  --el-button-active-border-color: var(--bk-wood-700);
+}
+
+:where(.el-button).el-button:where(.el-button--warning) {
+  --el-button-bg-color: var(--bk-warn-accent);
+  --el-button-border-color: var(--bk-warn-accent);
+  --el-button-hover-bg-color: var(--bk-earth-400);
+  --el-button-hover-border-color: var(--bk-earth-400);
+  --el-button-active-bg-color: var(--bk-earth-600);
+  --el-button-active-border-color: var(--bk-earth-600);
+}
+
+:where(.el-button).el-button:where(.el-button--danger) {
+  --el-button-bg-color: var(--bk-danger);
+  --el-button-border-color: var(--bk-danger);
+  --el-button-hover-bg-color: var(--bk-fire-600);
+  --el-button-hover-border-color: var(--bk-fire-600);
+  --el-button-active-bg-color: var(--bk-fire-700);
+  --el-button-active-border-color: var(--bk-fire-700);
+}
+
+/* 文字按钮 / 朴素按钮：必须把这一组变量全给到，
+   否则 hover 背景与文字色会回落 Element Plus 默认蓝 */
+:where(.el-button).el-button:where(.el-button--primary).is-plain,
+:where(.el-button).el-button:where(.el-button--primary).is-text {
+  --el-button-text-color: var(--bk-wood-600);
+  --el-button-hover-text-color: var(--bk-wood-500);
+  --el-button-hover-bg-color: var(--bk-wood-50);
+  --el-button-hover-border-color: var(--bk-wood-300);
+  --el-button-active-text-color: var(--bk-wood-700);
+  --el-button-active-bg-color: var(--bk-wood-100);
+  --el-button-active-border-color: var(--bk-wood-400);
+  --el-button-bg-color: transparent;
+  --el-button-border-color: var(--bk-wood-300);
+}
+
+:where(.el-button).el-button:where(.el-button--success).is-plain,
+:where(.el-button).el-button:where(.el-button--success).is-text {
+  --el-button-text-color: var(--bk-wood-600);
+  --el-button-hover-text-color: var(--bk-wood-500);
+  --el-button-hover-bg-color: var(--bk-wood-50);
+  --el-button-hover-border-color: var(--bk-wood-300);
+  --el-button-active-bg-color: var(--bk-wood-100);
+  --el-button-bg-color: transparent;
+  --el-button-border-color: var(--bk-wood-300);
+}
+
+:where(.el-button).el-button:where(.el-button--warning).is-plain,
+:where(.el-button).el-button:where(.el-button--warning).is-text {
+  --el-button-text-color: var(--bk-earth-600);
+  --el-button-hover-text-color: var(--bk-earth-500);
+  --el-button-hover-bg-color: var(--bk-earth-50);
+  --el-button-hover-border-color: var(--bk-earth-300);
+  --el-button-bg-color: transparent;
+  --el-button-border-color: var(--bk-earth-300);
+}
+
+:where(.el-button).el-button:where(.el-button--danger).is-plain,
+:where(.el-button).el-button:where(.el-button--danger).is-text {
+  --el-button-text-color: var(--bk-danger);
+  --el-button-hover-text-color: var(--bk-fire-600);
+  --el-button-hover-bg-color: var(--bk-fire-50);
+  --el-button-hover-border-color: var(--bk-fire-300);
+  --el-button-bg-color: transparent;
+  --el-button-border-color: var(--bk-fire-300);
+}
+
+/* 链接类元素也统一走主题色 */
+.el-link.el-link--primary {
+  --el-link-text-color: var(--bk-wood-600);
+  --el-link-hover-text-color: var(--bk-wood-500);
+}
+
+/* 单选 / 复选 / 开关的选中色 */
+.el-radio-button__original-radio:checked + .el-radio-button__inner {
+  background-color: var(--bk-wood-500);
+  border-color: var(--bk-wood-500);
+  box-shadow: -1px 0 0 0 var(--bk-wood-500);
+}
+
+.el-checkbox__input.is-checked .el-checkbox__inner,
+.el-checkbox__input.is-indeterminate .el-checkbox__inner {
+  background-color: var(--bk-wood-500);
+  border-color: var(--bk-wood-500);
+}
+
+.el-switch.is-checked .el-switch__core {
+  background-color: var(--bk-wood-500);
+  border-color: var(--bk-wood-500);
+}
+
+.el-input-number__increase:hover,
+.el-input-number__decrease:hover {
+  color: var(--bk-wood-500);
+}
+
+.el-step__head.is-process {
+  color: var(--bk-wood-500);
+  border-color: var(--bk-wood-500);
+}
+
+.el-pagination.is-background .el-pager li.is-active {
+  background-color: var(--bk-wood-500);
+}
+
+
+/* =============================================================================
+ *  禁用态也走中性灰
+ *  ============================================================================
+ *  Element Plus 默认禁用态是冷灰蓝（#a0cfff 一类），在低饱和主题里很突兀。
+ * ========================================================================== */
+
+.el-button.is-disabled,
+.el-button.is-disabled:hover,
+.el-button.is-disabled:focus,
+.el-button--primary.is-disabled,
+.el-button--primary.is-disabled:hover,
+.el-button--success.is-disabled,
+.el-button--success.is-disabled:hover,
+.el-button--warning.is-disabled,
+.el-button--warning.is-disabled:hover,
+.el-button--danger.is-disabled,
+.el-button--danger.is-disabled:hover {
+  --el-button-disabled-bg-color: #f0f0f2;
+  --el-button-disabled-border-color: var(--bk-line);
+  --el-button-disabled-text-color: #b0b0b6;
+}
+
+.el-input.is-disabled .el-input__wrapper,
+.el-textarea.is-disabled .el-textarea__inner,
+.el-select .el-input.is-disabled .el-input__wrapper {
+  background-color: #f7f7f8;
+  box-shadow: 0 0 0 1px var(--bk-line) inset;
+}
+
+.el-input.is-disabled .el-input__inner {
+  color: var(--bk-ink-3);
+}

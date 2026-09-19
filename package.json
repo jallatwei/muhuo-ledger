@@ -1,0 +1,27 @@
+{
+  "name": "bookkeeper",
+  "version": "0.1.0",
+  "private": true,
+  "description": "小企业自动记账系统：合同/发票导入 → 自动记账 → 凭证册 → 税务申报表",
+  "packageManager": "pnpm@11.7.0",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "pnpm -r --parallel --filter \"./apps/*\" dev",
+    "build": "pnpm --filter @bookkeeper/shared build && pnpm --filter @bookkeeper/api build && pnpm --filter @bookkeeper/web build",
+    "test": "pnpm -r test",
+    "test:unit": "pnpm --filter @bookkeeper/shared test && pnpm --filter @bookkeeper/api test",
+    "lint": "pnpm -r lint",
+    "typecheck": "pnpm -r typecheck",
+    "build:api": "pnpm --filter @bookkeeper/shared build && pnpm --filter @bookkeeper/api build",
+    "prisma:generate": "pnpm --filter @bookkeeper/api prisma:generate",
+    "prisma:migrate": "pnpm --filter @bookkeeper/api prisma:migrate",
+    "seed": "pnpm --filter @bookkeeper/api seed",
+    "clean": "pnpm -r exec rimraf dist node_modules/.cache"
+  },
+  "devDependencies": {
+    "rimraf": "^6.0.1",
+    "typescript": "~5.6.3"
+  }
+}

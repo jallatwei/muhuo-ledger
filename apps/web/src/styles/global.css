@@ -1,0 +1,207 @@
+/**
+ * 全局样式
+ * ============================================================
+ * 记账界面的排版要求与其他后台不同：
+ *   · 金额必须等宽、右对齐、千分位 —— 看一眼就能核对
+ *   · 分录表格要紧凑，一屏尽量多看几行
+ *   · 打印凭证册时隐藏所有界面元素
+ */
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: 'PingFang SC', 'Microsoft YaHei', 'Hiragino Sans GB', system-ui, sans-serif;
+  font-size: 14px;
+  color: var(--bk-ink);
+  background: var(--bk-page-bg);
+}
+
+/* ---- 金额显示：等宽 + 右对齐 + 千分位 ---- */
+.bk-money {
+  font-family: var(--bk-money-font);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.bk-money--debit {
+  color: var(--bk-debit);
+}
+
+.bk-money--credit {
+  color: var(--bk-credit);
+}
+
+.bk-money--zero {
+  color: var(--bk-ink-3);
+}
+
+.bk-money--total {
+  font-weight: 700;
+  border-top: 2px solid var(--bk-ink);
+}
+
+/* ---- 页面骨架 ---- */
+.bk-page {
+  padding: 16px;
+}
+
+.bk-page__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 16px;
+}
+
+.bk-page__title {
+  font-size: 18px;
+  font-weight: 600;
+  margin: 0;
+}
+
+.bk-page__subtitle {
+  font-size: 12px;
+  color: var(--bk-ink-3);
+  margin-top: 4px;
+}
+
+/* ---- 卡片 ---- */
+.bk-card {
+  background: var(--bk-surface);
+  border: 1px solid var(--bk-line-2);
+  border-radius: 8px;
+  padding: 16px;
+  margin-bottom: 16px;
+  box-shadow: 0 1px 2px rgb(122 45 20 / 4%), 0 2px 8px rgb(122 45 20 / 3%);
+}
+
+.bk-card__title {
+  font-size: 15px;
+  font-weight: 600;
+  margin: 0 0 12px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--bk-line-2);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+/* ---- 分录表：紧凑 ---- */
+.bk-entry-table .el-table__cell {
+  padding: 4px 0;
+}
+
+.bk-entry-table .el-input__wrapper {
+  box-shadow: none;
+  background: transparent;
+}
+
+.bk-entry-table .el-input__wrapper:hover,
+.bk-entry-table .el-input__wrapper.is-focus {
+  box-shadow: 0 0 0 1px var(--bk-fire-300) inset;
+  background: var(--bk-surface);
+}
+
+/* ---- 合计行 ---- */
+.bk-total-row {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 24px;
+  padding: 10px 16px;
+  background: var(--bk-fire-50);
+  border-radius: 4px;
+  margin-top: 12px;
+  font-size: 13px;
+}
+
+.bk-total-row__label {
+  color: var(--bk-ink-2);
+}
+
+.bk-total-row__balanced {
+  color: var(--bk-wood-500);
+  font-weight: 600;
+}
+
+.bk-total-row__unbalanced {
+  color: var(--bk-danger);
+  font-weight: 600;
+}
+
+/* ---- 提示条 ---- */
+.bk-hint {
+  font-size: 12px;
+  color: var(--bk-ink-3);
+  line-height: 1.7;
+}
+
+.bk-hint--warn {
+  color: var(--bk-earth-500);
+}
+
+.bk-mono {
+  font-family: var(--bk-money-font);
+  font-size: 12px;
+}
+
+/* ---- 打印：只留凭证内容 ---- */
+@media print {
+  .el-header,
+  .el-aside,
+  .el-footer,
+  .no-print {
+    display: none !important;
+  }
+
+  body {
+    background: var(--bk-surface);
+  }
+
+  .bk-card {
+    box-shadow: none;
+    padding: 0;
+    margin: 0;
+  }
+}
+
+/* 卡片标题左侧一道火色短线，作为视觉锚点 */
+.bk-card__title > span:first-child::before {
+  content: '';
+  display: inline-block;
+  width: 3px;
+  height: 14px;
+  background: var(--bk-fire-500);
+  border-radius: 2px;
+  margin-right: 8px;
+  vertical-align: -2px;
+}
+
+/* ---- 滚动条也换暖调，避免出现冷灰条 ---- */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--bk-line-2);
+}
+
+::-webkit-scrollbar-thumb {
+  background: #d6c4b6;
+  border-radius: 5px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--bk-earth-300);
+}
