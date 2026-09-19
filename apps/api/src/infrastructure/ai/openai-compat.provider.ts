@@ -30,7 +30,12 @@ import {
 import { resolveAiApiKey, type Env } from '../../config/env';
 
 interface OpenAiChoice {
-  message?: { content?: string | null };
+  /**
+   * reasoning_content 是小米 MiMo 等"深度思考"模型额外返回的推理正文，
+   * 与 content 共享 max_tokens 预算。我们不把它当结果用（推理过程不是抽取结果），
+   * 只在报错时用它判断"是不是思考把预算吃光了"。
+   */
+  message?: { content?: string | null; reasoning_content?: string | null };
   finish_reason?: string;
 }
 interface OpenAiUsage {
@@ -194,6 +199,16 @@ export class OpenAiCompatProvider implements AiProvider {
     for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
       const start = Date.now();
       try {
+        /*
+         * ★ max_tokens 与 max_completion_tokens 的关系（已实测，别凭印象改）：
+         *   MiMo 官方文档用的是 max_completion_tokens，语义是
+         *   **思考内容与最终回答共享的**总上限。我们在 Token Plan 端点上实测过
+         *   两个参数名**都被接受**，且都作用于同一个总额度：
+         *     max_tokens=8            -> completion_tokens=8,  reasoning=8,  finish_reason=length
+         *     max_completion_tokens=8 -> completion_tokens=8,  reasoning=9,  finish_reason=length
+         *   这里保留旧名 max_tokens：OpenAI 兼容服务商（Ollama / vLLM 等）
+         *   普遍认它，换成新名反而可能在某些服务商上被忽略。
+         */
         const payload: Record<string, unknown> = {
           model: body.model,
           messages: body.messages,
@@ -227,7 +242,35 @@ export class OpenAiCompatProvider implements AiProvider {
         const res = await this.call(payload, timeoutMs);
         const latencyMs = Date.now() - start;
 
-        const text = res.choices?.[0]?.message?.content ?? '';
+        const choice = res.choices?.[0];
+        const text = choice?.message?.content ?? '';
+
+        // ★ 截断必须报错，不能让它退化成"没抽取到字段"。
+        //   实测小米 MiMo：深度思考**默认开启**，推理内容与可见 content 共享
+        //   同一个 max_tokens 预算。预算给小了就会返回
+        //     finish_reason="length"、content=""、reasoning_content="…"
+        //   此时 text 是空串，下游会把"识别被截断"读成"这张票没有金额字段"——
+        //   记账系统里这属于**静默漏账**，比直接报错严重得多。
+        //
+        //   retryable=false：重试不会让 max_tokens 变大，只会再截断一次，白花钱。
+        //
+        //   ★ 只在 finish_reason=length 时判定，不要顺手改成"content 为空就报错"：
+        //     官方文档里模型发起工具调用时，返回的就是 content="" + tool_calls 非空
+        //     （finish_reason=tool_calls），那是正常响应，不是失败。
+        //     本项目不发送 tools，所以不会走到那个分支，但判定条件必须保持精确。
+        if (choice?.finish_reason === 'length') {
+          const ateBudget = (choice.message?.reasoning_content ?? '').trim().length > 0;
+          throw new AiProviderError(
+            '模型输出被 max_tokens 截断，未返回完整结果。' +
+              (ateBudget
+                ? '（本次 content 为空、reasoning_content 有内容 —— 是深度思考把 token 预算吃光了。' +
+                  '可发 thinking:{type:"disabled"}（AI_SEND_THINKING_PARAM=true）或调大 max_tokens）'
+                : '（调大 max_tokens 后重试）'),
+            this.name,
+            false,
+          );
+        }
+
         const json = body.jsonMode || text.trim().startsWith('{') ? extractJson(text) : undefined;
 
         // 成功，重置熔断计数

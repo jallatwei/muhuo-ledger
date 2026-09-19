@@ -448,6 +448,49 @@ export function toDbString(value: DecimalInput): string {
   return round2(value).toFixed(2);
 }
 
+/**
+ * 归一化「外来的税率写法」为小数。
+ * ============================================================
+ * ★ 为什么必须有这一步，而不是"让提示词写清楚就行"：
+ *   实测小米 MiMo 在两次同类请求里，一次返回 "0.13"、一次返回 "13%"。
+ *   提示词无法保证模型的写法，而 "13%" 走到 dec() 会直接抛 MoneyError
+ *   （dec 会剥掉 ¥ 与千分位，但**不剥百分号**），
+ *   最终以 500 的形式糊在用户脸上，连"税率格式不对"这句话都看不到。
+ *
+ *   归一化规则（之所以敢这么判，是因为合法税率全都 < 0.15）：
+ *     "13%"  → 0.13     （显式百分号，除以 100）
+ *     "13"   → 0.13     （数值 ≥ 1，只可能是百分数写法）
+ *     "0.13" → 0.13     （已经是小数，原样保留）
+ *     "0.13%"→ 0.0013   （照百分号处理；它不是合法税率，交给 V3 校验去报错）
+ *
+ *   ★ 注意这里**不抛异常**：不认识的写法原样返回，让校验规则 V3
+ *     给出"不在合法枚举内"这种用户能看懂、能自己改的提示。
+ *     "无法解析为金额"这种内部错误不该出现在用户的界面上。
+ */
+export function normalizeTaxRate(raw: unknown): string | undefined {
+  if (raw === null || raw === undefined) return undefined;
+  const s = String(raw).trim();
+  if (s === '') return undefined;
+
+  const hadPercent = s.includes('%') || s.includes('％');
+  const cleaned = s.replace(/[%％,，\s¥￥]/g, '');
+  if (cleaned === '') return undefined;
+
+  let d: Decimal;
+  try {
+    d = new Decimal(cleaned);
+  } catch {
+    return s; // 不认识的写法原样交回，由 V3 报"不在合法枚举内"
+  }
+  if (!d.isFinite()) return s;
+
+  // 显式百分号，或数值大到不可能是小数税率 —— 都按百分数处理
+  if (hadPercent || d.abs().greaterThanOrEqualTo(1)) {
+    d = d.dividedBy(100);
+  }
+  return d.toString();
+}
+
 /** 税率展示：0.13 → "13%"，0 → "免税" */
 export function formatTaxRate(rate: DecimalInput): string {
   const r = dec(rate);

@@ -167,6 +167,27 @@ export function describeAiConfig(env: Env): { warnings: string[]; summary: strin
     warnings.push('未配置 AI 密钥（MIMO_API_KEY 或 AI_API_KEY），云端模型服务会拒绝请求');
   }
 
+  // ★ 开启深度思考有两个**静默**副作用，必须在这里点出来 ——
+  //   两者都不会报错，只会让结果悄悄变差，正是"别记错"最怕的那类问题：
+  //
+  //   1) MiMo 官方文档：思考模式下 mimo-v2.5 / mimo-v2.5-pro
+  //      **不支持自定义 temperature 和 top_p**，即使传入也会被强制
+  //      采用推荐默认值 1.0 / 0.95。也就是说我们在 .env 里配的
+  //      AI_TEMPERATURE=0 会被无声忽略，票据抽取不再可复现 ——
+  //      同一张票两次识别的结果可能不一样，而"同一张票两次结果不同"
+  //      在记账场景里非常难排查。
+  //
+  //   2) 思考内容与最终回答共享输出上限（max_tokens / max_completion_tokens
+  //      限制的是两者之和）。预算不够时 content 会是空的，
+  //      表现为 finish_reason=length —— 适配层已把这种情况当错误抛出，
+  //      但错误终究不如一开始就不打开它。
+  if (env.AI_THINKING_ENABLED) {
+    warnings.push(
+      'AI_THINKING_ENABLED=true：MiMo 深度思考已开启。副作用一：temperature/top_p 会被强制成 1.0/0.95，' +
+        'AI_TEMPERATURE 配的值被忽略，抽取结果不再可复现；副作用二：思考与回答共享输出上限，容易触发截断。' +
+        '票据抽取建议设回 false 并保持 AI_SEND_THINKING_PARAM=true（显式发 thinking:disabled）。',
+    );
+  }
   return {
     warnings,
     summary: `AI_PROVIDER=${env.AI_PROVIDER}，视觉模型 ${env.AI_VISION_MODEL || '(未配置)'}，文本模型 ${

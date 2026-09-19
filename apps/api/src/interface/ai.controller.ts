@@ -25,6 +25,7 @@ import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { AiService } from '../infrastructure/ai/ai.service';
 import { PrismaService } from '../infrastructure/prisma/prisma.service';
 import { validateExtraction, decideRouting } from '../domain/extraction/validation';
+import { normalizeTaxRate } from '@bookkeeper/shared';
 import type { ExtractTargetType } from '../infrastructure/ai/ai-provider.interface';
 import { EXTRACT_TARGETS } from '../infrastructure/ai/ai.service';
 import {
@@ -271,7 +272,10 @@ export class AiController {
         buyerName: data.buyerName as string | undefined,
         buyerTaxNo: (data.buyerTaxNo as string | null) ?? null,
         amountExclTax: data.amountExclTax as string | undefined,
-        taxRate: data.taxRate as string | undefined,
+        // ★ 必须归一化：实测 MiMo 同类请求会一次给 "0.13"、一次给 "13%"，
+        //   而 "13%" 直接进 dec() 会抛 MoneyError（dec 剥 ¥ 与千分位，不剥 %），
+        //   最后以 500 的形式糊在用户脸上，连"税率格式不对"都看不到。
+        taxRate: normalizeTaxRate(data.taxRate),
         taxAmount: data.taxAmount as string | undefined,
         amountInclTax: data.amountInclTax as string | undefined,
         isRedFlushed: data.isRedFlushed as boolean | undefined,
@@ -400,7 +404,10 @@ export class AiController {
         buyerName: data.buyerName as string | undefined,
         buyerTaxNo: (data.buyerTaxNo as string | null) ?? null,
         amountExclTax: data.amountExclTax as string | undefined,
-        taxRate: data.taxRate as string | undefined,
+        // ★ 必须归一化：实测 MiMo 同类请求会一次给 "0.13"、一次给 "13%"，
+        //   而 "13%" 直接进 dec() 会抛 MoneyError（dec 剥 ¥ 与千分位，不剥 %），
+        //   最后以 500 的形式糊在用户脸上，连"税率格式不对"都看不到。
+        taxRate: normalizeTaxRate(data.taxRate),
         taxAmount: data.taxAmount as string | undefined,
         amountInclTax: data.amountInclTax as string | undefined,
         isRedFlushed: data.isRedFlushed as boolean | undefined,

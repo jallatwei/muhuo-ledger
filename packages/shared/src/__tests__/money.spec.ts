@@ -26,6 +26,7 @@ import {
   formatMoney,
   toDbString,
   formatTaxRate,
+  normalizeTaxRate,
   MoneyError,
 } from '../money';
 
@@ -365,6 +366,51 @@ describe('展示格式化', () => {
     expect(formatTaxRate('0.03')).toBe('3%');
     expect(formatTaxRate('0.005')).toBe('0.5%');
     expect(formatTaxRate('0')).toBe('免税');
+  });
+
+  it('normalizeTaxRate —— 百分号写法转小数（实测 MiMo 会返回 "13%"）', () => {
+    expect(normalizeTaxRate('13%')).toBe('0.13');
+    expect(normalizeTaxRate('9%')).toBe('0.09');
+    expect(normalizeTaxRate('0.5%')).toBe('0.005');
+    expect(normalizeTaxRate('13％')).toBe('0.13'); // 全角百分号
+    expect(normalizeTaxRate(' 13 % ')).toBe('0.13');
+  });
+
+  it('normalizeTaxRate —— 数值 >= 1 视为百分数（合法税率全都 < 0.15，不存在歧义）', () => {
+    expect(normalizeTaxRate('13')).toBe('0.13');
+    expect(normalizeTaxRate(13)).toBe('0.13');
+    expect(normalizeTaxRate('6')).toBe('0.06');
+    expect(normalizeTaxRate('3')).toBe('0.03');
+  });
+
+  it('normalizeTaxRate —— 已经是小数的原样保留', () => {
+    expect(normalizeTaxRate('0.13')).toBe('0.13');
+    expect(normalizeTaxRate('0.06')).toBe('0.06');
+    expect(normalizeTaxRate(0)).toBe('0');
+  });
+
+  it('normalizeTaxRate —— 空值返回 undefined，交给上游当"未识别到"', () => {
+    expect(normalizeTaxRate(null)).toBeUndefined();
+    expect(normalizeTaxRate(undefined)).toBeUndefined();
+    expect(normalizeTaxRate('')).toBeUndefined();
+    expect(normalizeTaxRate('   ')).toBeUndefined();
+  });
+
+  it('normalizeTaxRate —— ★ 认不出的写法不抛异常，原样交回让 V3 报"不在合法枚举内"', () => {
+    // 关键：这里若抛 MoneyError，用户看到的是 500 + "无法解析为金额"，
+    // 而实际上他需要的是"税率写法不对"。可以报错，但必须是能看懂的那种。
+    expect(() => normalizeTaxRate('免税')).not.toThrow();
+    expect(normalizeTaxRate('免税')).toBe('免税');
+    expect(() => normalizeTaxRate('abc')).not.toThrow();
+  });
+
+  it('normalizeTaxRate —— 0.13% 不是合法税率，但归一化本身不该拦，交给 V3', () => {
+    expect(normalizeTaxRate('0.13%')).toBe('0.0013');
+  });
+
+  it('normalizeTaxRate 的结果可以直接喂给 dec（改造前 "13%" 会在这里抛）', () => {
+    expect(() => dec(normalizeTaxRate('13%')!)).not.toThrow();
+    expect(dec(normalizeTaxRate('13%')!).equals('0.13')).toBe(true);
   });
 });
 

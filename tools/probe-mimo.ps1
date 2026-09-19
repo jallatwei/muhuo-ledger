@@ -24,7 +24,7 @@
 #
 # 安全：脚本只读环境变量，不写任何文件，不打印完整 Key。
 param(
-  [string]$BaseUrl = 'https://api.xiaomimimo.com/v1',
+  [string]$BaseUrl = 'https://token-plan-cn.xiaomimimo.com/v1',
   [string]$Model = 'mimo-v2.5',
   [ValidateRange(1, 3)]
   [int]$StopAfter = 3,
@@ -104,20 +104,32 @@ function Count-Tokens($bodyText) {
   } catch { }
   return 0
 }
+# ★ thinking 参数的施加必须是**共用**的一步。
+#   曾经的写法只给第 2、3 层加，第 1 层漏了 —— 于是 -SendThinkingParam 时
+#   表头打印"thinking：发送（disabled）"，第 1 层却仍带着思考跑（推理 token=15），
+#   探测结论与实际生产配置对不上。开关不统一，结论就不可比。
+function Disable-Thinking([hashtable]$body) {
+  if ($SendThinkingParam) { $body['thinking'] = @{ type = 'disabled' } }
+}
 
 # ============================================================================
 Step '第 1 层 · 连通性与鉴权（1 次极小的文本请求）'
 # ============================================================================
 
 $t0 = Get-Date
-$r1 = Invoke-Mimo @{
+$body1 = @{
   model      = $Model
   messages   = @(
     @{ role = 'system'; content = 'Reply with the single word: pong' }
     @{ role = 'user'; content = 'ping' }
   )
-  max_tokens = 16
+  # ★ 这里曾经写 16，是个坑：MiMo 深度思考**默认开启**，推理正文与可见
+  #   content 共享这个预算，16 会被推理吃光，返回 content="" 而 finish_reason="length"。
+  #   64 对"回一个词"依然极便宜，但足够让 reasoning + 正文都放得下。
+  max_tokens = 64
 }
+Disable-Thinking $body1
+$r1 = Invoke-Mimo $body1
 $elapsed = [Math]::Round(((Get-Date) - $t0).TotalSeconds, 2)
 
 if ($r1.status -eq 0) {
@@ -148,7 +160,14 @@ try { $j1 = $r1.body | ConvertFrom-Json } catch { }
 if ($j1) {
   Ok '返回体是合法 JSON'
   $content = $j1.choices[0].message.content
+  $finish = $j1.choices[0].finish_reason
+  $reasoningTokens = 0
+  if ($j1.usage.completion_tokens_details) {
+    $reasoningTokens = [int]$j1.usage.completion_tokens_details.reasoning_tokens
+  }
+
   Info "模型回复：$content"
+  Info "finish_reason=$finish   推理 token=$reasoningTokens"
   Info "返回的 model 字段：$($j1.model)"
   Ok "usage 可读（total_tokens=$($j1.usage.total_tokens)）"
   $script:totalCostTokens += [int]$j1.usage.total_tokens
@@ -156,7 +175,30 @@ if ($j1) {
   if ($j1.model -ne $Model) {
     Info "⚠ 返回的模型名（$($j1.model)）与请求的不一致，可能被路由到了别处"
   }
-  Ok '★ 鉴权与地址均正确，可以进入下一层'
+
+  # ★ 这一段是本层真正有价值的断言，也是踩过坑才补上的：
+  #   改造前本层只看"HTTP 200 + 返回体是 JSON"就判 PASS，
+  #   而 content 为空、finish_reason=length 的情况下**照样 PASS** ——
+  #   一个坏掉的配置被探测脚本盖了章。HTTP 通了不等于模型答了话。
+  if ($finish -eq 'length') {
+    Bad '★ 输出被 max_tokens 截断（finish_reason=length），没有拿到完整答案'
+    if ($reasoningTokens -gt 0) {
+      Info "本次推理占用了 $reasoningTokens 个 token。MiMo 的深度思考默认开启，"
+      Info '推理正文与可见 content **共享** max_tokens 预算，预算不够时 content 会是空的。'
+    }
+    Info '正式接入请发 thinking:{type:"disabled"}（AI_SEND_THINKING_PARAM=true），'
+    Info '把预算全留给正文，同时避免思维链把 temperature 顶到 1.0。'
+    Info '可加 -SendThinkingParam 重跑本层确认。'
+    exit 1
+  }
+
+  if (-not $content) {
+    Bad '★ content 为空 —— HTTP 200 不代表模型答了话，这属于静默失败'
+    Info '加 -SendThinkingParam 重跑；若仍为空，检查 max_tokens 与模型名。'
+    exit 1
+  }
+
+  Ok '★ 鉴权、地址、正文三者均正确（content 非空），可以进入下一层'
 } else {
   Bad '返回体不是合法 JSON'
   Info $r1.body.Substring(0, [Math]::Min(400, $r1.body.Length))
@@ -182,7 +224,7 @@ $body2 = @{
   max_tokens      = 256
   response_format = @{ type = 'json_object' }
 }
-if ($SendThinkingParam) { $body2['thinking'] = @{ type = 'disabled' } }
+Disable-Thinking $body2
 
 $r2 = Invoke-Mimo $body2
 Info "HTTP $($r2.status)"
@@ -267,7 +309,7 @@ $body3 = @{
   max_tokens = 512
   response_format = @{ type = 'json_object' }
 }
-if ($SendThinkingParam) { $body3['thinking'] = @{ type = 'disabled' } }
+Disable-Thinking $body3
 
 $r3 = Invoke-Mimo $body3 -TimeoutSec 120
 Info "HTTP $($r3.status)"
@@ -320,6 +362,23 @@ if ($r3.status -ne 200) {
       } else {
         Ok '金额是纯十进制字符串（无货币符号、无千分位）'
       }
+
+      # ★ taxRate 必须单独检查。曾经漏了它，而实测 MiMo 在这一层返回的是
+      #   "13%"（同一份提示词，第 2 层却返回 "0.13"）—— 上面那条"金额干净"
+      #   照样 PASS，因为 13% 不是金额字段。一个坏值就这么从探测里溜过去了。
+      #   这里放宽到"小数或百分数都算合格"，因为适配层已经会归一化；
+      #   探测要验的是"模型给的写法我们吃得下"，不是"模型必须按我想的写"。
+      $rate = "$($p3.taxRate)"
+      if (-not $rate -or $rate -eq '') {
+        Info '税率为空（免税或模型未识别到），可接受'
+      } elseif ($rate -match '^\d+(\.\d+)?\s*[%％]?$') {
+        Ok "税率的写法可被归一化接受：$rate"
+        Info '（适配层 normalizeTaxRate 会把 13% 与 13 都转成 0.13）'
+      } else {
+        Bad "★ 税率写法无法识别：$rate"
+        Info '适配层会把它原样交回，由校验规则 V3 报"不在合法枚举内"——'
+        Info '用户能看到可读提示，但最好还是在提示词里约束写法。'
+      }
     }
   } catch {
     Bad '返回体不是严格 JSON'
@@ -344,7 +403,7 @@ Write-Host ""
 if ($script:fail -eq 0) {
   Write-Host "下一步：把配置写进 apps/api/.env（该文件已被 git 忽略）" -ForegroundColor Cyan
   Write-Host "  AI_PROVIDER=openai-compatible" -ForegroundColor White
-  Write-Host "  AI_BASE_URL=https://api.xiaomimimo.com/v1" -ForegroundColor White
+  Write-Host "  AI_BASE_URL=https://token-plan-cn.xiaomimimo.com/v1" -ForegroundColor White
   Write-Host "  MIMO_API_KEY=<你的 token>" -ForegroundColor White
   Write-Host "  AI_VISION_MODEL=$Model" -ForegroundColor White
   Write-Host "  AI_TEXT_MODEL=$Model" -ForegroundColor White

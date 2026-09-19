@@ -393,6 +393,63 @@ describe('重试策略', () => {
   });
 });
 
+describe('输出被截断（finish_reason=length）', () => {
+  // ★ 这一组的由来是一次真实探测：小米 MiMo 的深度思考**默认开启**，
+  //   推理正文（reasoning_content）与可见 content 共享同一个 max_tokens 预算。
+  //   max_tokens 只给 16 时实测返回：
+  //     finish_reason="length"、content=""、reasoning_content="The user sent..."
+  //   改造前 text 会退化成空串，下游把「识别被截断」读成「这张票没有金额字段」，
+  //   属于记账系统里最不能接受的**静默漏账**。
+  const truncated = (reasoning = '') => ({
+    status: 200,
+    raw: JSON.stringify({
+      model: 'test-model',
+      choices: [{ finish_reason: 'length', message: { content: '', reasoning_content: reasoning } }],
+      usage: { prompt_tokens: 19, completion_tokens: 16 },
+    }),
+  });
+
+  it('finish_reason=length 时抛出 AiProviderError，而不是返回空文本', async () => {
+    handler = () => truncated('The user sent ping...');
+    const p = makeProvider();
+    const err = await p
+      .chat({ messages: [{ role: 'user', content: 'hi' }], purpose: 'ANOMALY' })
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(AiProviderError);
+  });
+
+  it('不可重试 —— 重试不会让 max_tokens 变大，只会再截断一次', async () => {
+    handler = () => truncated();
+    const p = makeProvider();
+    const err = await p
+      .chat({ messages: [{ role: 'user', content: 'hi' }], purpose: 'ANOMALY' })
+      .catch((e: unknown) => e);
+    expect((err as AiProviderError).retryable).toBe(false);
+    expect(calls.length).toBe(1);
+  });
+
+  it('content 为空但 reasoning_content 有内容时，报错要点明是思考吃掉了预算', async () => {
+    handler = () => truncated('Let me think about the amounts...');
+    const p = makeProvider();
+    const err = (await p
+      .chat({ messages: [{ role: 'user', content: 'hi' }], purpose: 'ANOMALY' })
+      .catch((e: unknown) => e)) as AiProviderError;
+    expect(err.message).toContain('thinking');
+    expect(err.message).toContain('reasoning_content');
+  });
+
+  it('finish_reason=stop 且 content 正常时不受影响（不误报）', async () => {
+    handler = () => ({
+      status: 200,
+      raw: JSON.stringify({
+        choices: [{ finish_reason: 'stop', message: { content: '{"ok":true}' } }],
+      }),
+    });
+    const p = makeProvider();
+    const r = await p.chat({ messages: [{ role: 'user', content: 'hi' }], purpose: 'ANOMALY' });
+    expect(r.text).toBe('{"ok":true}');
+  });
+});
 describe('response_format 能力降级', () => {
   it('服务商报 response_format 不支持时，去掉该参数重试一次并记住结论', async () => {
     let n = 0;

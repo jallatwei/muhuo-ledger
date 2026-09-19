@@ -17,7 +17,7 @@ import { describeAiConfig, resolveAiApiKey, type Env } from '../env';
 function makeEnv(overrides: Partial<Env> = {}): Env {
   return {
     AI_PROVIDER: 'openai-compatible',
-    AI_BASE_URL: 'https://api.xiaomimimo.com/v1',
+    AI_BASE_URL: 'https://token-plan-cn.xiaomimimo.com/v1',
     AI_VISION_MODEL: 'mimo-v2.5',
     AI_TEXT_MODEL: 'mimo-v2.5',
     AI_API_KEY: '',
@@ -68,5 +68,31 @@ describe('describeAiConfig 的密钥告警', () => {
     const { warnings, summary } = describeAiConfig(makeEnv({ AI_PROVIDER: 'mock', MIMO_API_KEY: '' }));
     expect(warnings).toEqual([]);
     expect(summary).toContain('mock');
+  });
+});
+
+describe('describeAiConfig 的深度思考告警', () => {
+  // ★ 开启深度思考的两个副作用都是**静默**的：不报错，只是结果变差。
+  //   MiMo 官方文档：思考模式下 mimo-v2.5 / mimo-v2.5-pro 不支持自定义
+  //   temperature 与 top_p，传入也会被强制成 1.0 / 0.95。
+  //   也就是说 AI_TEMPERATURE=0 会被无声忽略，同一张票两次识别可能不一致 ——
+  //   这种"偶发不一致"在记账场景里极难排查，所以必须在 /api/health 里点出来。
+  it('AI_THINKING_ENABLED=true 时告警要点明 temperature 被忽略', () => {
+    const { warnings } = describeAiConfig(makeEnv({ MIMO_API_KEY: 'k', AI_THINKING_ENABLED: true }));
+    const hit = warnings.find((w) => w.includes('AI_THINKING_ENABLED'));
+    expect(hit).toBeDefined();
+    expect(hit).toContain('temperature');
+    expect(hit).toContain('1.0');
+  });
+
+  it('AI_THINKING_ENABLED=true 时告警也要提到截断风险', () => {
+    const { warnings } = describeAiConfig(makeEnv({ MIMO_API_KEY: 'k', AI_THINKING_ENABLED: true }));
+    const hit = warnings.find((w) => w.includes('AI_THINKING_ENABLED'))!;
+    expect(hit).toContain('截断');
+  });
+
+  it('AI_THINKING_ENABLED=false（默认）时没有这条告警', () => {
+    const { warnings } = describeAiConfig(makeEnv({ MIMO_API_KEY: 'k', AI_THINKING_ENABLED: false }));
+    expect(warnings.some((w) => w.includes('AI_THINKING_ENABLED'))).toBe(false);
   });
 });
