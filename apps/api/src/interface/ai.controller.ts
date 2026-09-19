@@ -315,6 +315,19 @@ export class AiController {
     @Query('case') caseKey?: string,
     @Query('targetType') targetType?: ExtractTargetType,
   ) {
+    // ★ 必须在查库前显式校验。不校验的话 entityId 为 undefined 会被传给
+    //   Prisma 的 where，抛出一条包含完整 schema 的 PrismaClientValidationError，
+    //   过滤器把它当未知异常兜成 HTTP 500，并把整个 EntityWhereInput 类型定义
+    //   写进 userMessage —— 对调用方毫无用处，还泄露了内部结构。
+    if (!entityId) {
+      throw new BadRequestException('缺少 entityId。请指定要归属的核算主体。');
+    }
+    if (caseKey && !/^[a-z0-9-]+$/i.test(caseKey)) {
+      throw new BadRequestException(
+        `样例名「${caseKey}」格式不合法（只允许字母、数字与短横线）。`,
+      );
+    }
+
     const entity = await this.prisma.entity.findUniqueOrThrow({ where: { id: entityId } });
     const type: ExtractTargetType = targetType ?? 'INVOICE';
 

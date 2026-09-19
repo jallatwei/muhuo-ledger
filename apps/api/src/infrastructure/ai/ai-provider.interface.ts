@@ -95,13 +95,26 @@ export interface AiProvider {
   estimateCost(req: ChatRequest | VisionRequest): Promise<Decimal | null>;
 }
 
-/** AI 调用失败 */
+/**
+ * AI 调用失败
+ *
+ * `httpStatus` 让错误自己声明该回给客户端什么状态码，默认 502（上游模型服务出问题）。
+ *
+ * ★ 为什么需要它，而不是在异常过滤器里按类型一刀切：
+ *   同一个 AiProviderError 可能是两种完全不同的情况 ——
+ *     · 上游超时 / 限流 / Key 失效 → 502，用户该做的是稍后重试或找运维
+ *     · 调用方传了不存在的样例名 / 非法参数 → 400，用户该做的是改请求
+ *   一刀切成 502 会把后者误报成"服务不可用"，
+ *   用户会一直重试一个永远不会成功的请求。
+ */
 export class AiProviderError extends Error {
   constructor(
     message: string,
     readonly provider: string,
     readonly retryable: boolean,
     override readonly cause?: unknown,
+    /** 建议回给客户端的 HTTP 状态码。默认 502 */
+    readonly httpStatus?: number,
   ) {
     super(message);
     this.name = 'AiProviderError';

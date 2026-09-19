@@ -545,11 +545,36 @@ export class MockAiProvider implements AiProvider {
     hint: string,
   ): T {
     const explicit = /__case=([a-z0-9-]+)/i.exec(hint)?.[1];
+
+    /*
+     * ★ 显式指定了样例名却找不到时**必须抛错**，绝不能回退到哈希选样。
+     *
+     *   原来的写法是 `if (found) return found;`，找不到就继续往下走哈希选择。
+     *   后果：验证脚本传一个拼错的样例名（比如 purchase-office-supplie），
+     *   会拿到一个**完全不相干的样例**却被判为通过 —— 断言全绿，功能其实是坏的。
+     *   实测踩到：传 case=nonexistent-case-xyz 返回了火车票数据，HTTP 201，
+     *   而且校验还报 PASS。这类"假绿"比直接报错危险得多。
+     *
+     *   错误信息里把可选样例名列出来，省得去翻源码。
+     */
     if (explicit) {
       const found = samples.find((s) => s.key === explicit);
       if (found) return found;
+      throw new AiProviderError(
+        `Mock Provider 没有名为「${explicit}」的样例。可选：${samples
+          .map((s) => s.key)
+          .join('、')}（样例名拼错时故意报错，而不是随便给一个 —— ` +
+          `否则验证脚本会拿着不相干的数据假通过）`,
+        this.name,
+        false,
+        undefined,
+        // ★ 调用方参数错误，不是上游故障 —— 声明 400 而不是默认的 502。
+        //   否则用户看到"AI 服务暂时不可用"，会一直重试一个永远不会成功的请求。
+        400,
+      );
     }
-    // 按内容哈希稳定选择，保证同一输入永远返回同一结果（可复现）
+
+    // 未指定样例名时按内容哈希稳定选择，保证同一输入永远返回同一结果（可复现）
     let hash = 0;
     for (let i = 0; i < hint.length; i += 1) {
       hash = (hash * 31 + hint.charCodeAt(i)) >>> 0;

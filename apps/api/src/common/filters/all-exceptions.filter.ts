@@ -25,6 +25,7 @@ import {
 } from '@nestjs/common';
 import type { Request, Response } from 'express';
 import { DomainError } from '../../domain/accounting/errors';
+import { AiProviderError } from '../../infrastructure/ai/ai-provider.interface';
 
 /** 数据库触发器抛出的错误码 → 用户提示 */
 const DB_ERROR_MESSAGES: Record<string, { userMessage: string; status: number }> = {
@@ -192,6 +193,32 @@ export class AllExceptionsFilter implements ExceptionFilter {
         code: 'BK_E_DB_UNREACHABLE',
         message: rawMessage,
         userMessage: '数据库暂时不可用，请稍后重试。若持续出现请联系管理员。',
+      };
+    }
+
+    // ②b 上游 AI 服务出错 —— 这不是"系统内部错误"
+    //
+    // ★ 为什么单独映射，而不是让它落到 500 兜底：
+    //   模型服务超时、限流、返回格式异常，都是**上游**问题。
+    //   报 500 会让用户以为本系统坏了、以为是自己的操作有问题，
+    //   而实际要做的是"稍后重试"或"先手工录入"。
+    //   502 的语义正好是"上游服务出了问题"，与事实相符。
+    //
+    // ★ 用户可见文案必须给出出路：AI 挂了不该阻塞记账，
+    //   因为整个系统的设计前提就是「所有自动化产出都进待确认区」。
+    if (exception instanceof AiProviderError) {
+      const retryHint = exception.retryable
+        ? '这通常是临时的（限流、超时或上游抖动），稍后重试即可。'
+        : '重试通常无效 —— 多半是配置或额度问题，需要检查 API Key、模型名与账户余额。';
+      return {
+        statusCode: exception.httpStatus ?? HttpStatus.BAD_GATEWAY,
+        code: 'BK_E_AI_PROVIDER',
+        message: `[${exception.provider}] ${exception.message}`,
+        userMessage:
+          `AI 识别服务暂时不可用：${exception.message}` +
+          retryHint +
+          '在此期间可以改用「手工录入」—— 记账功能不受影响，' +
+          'AI 只是省人工，不是记账的前提。',
       };
     }
 

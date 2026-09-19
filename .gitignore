@@ -50,3 +50,7 @@ pnpm-debug.log*
 # ---- 测试 ----
 coverage/
 .nyc_output/
+
+# 临时文件（提交信息、脚本中间产物）
+tools/_commit-msg.txt
+tools/_*.txt
