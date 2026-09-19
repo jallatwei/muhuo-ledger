@@ -66,6 +66,17 @@ export class OpenAiCompatProvider implements AiProvider {
     return this.config.get<Env>('env') as Env;
   }
 
+  /**
+   * 取 API Key。
+   *
+   * ★ 优先 MIMO_API_KEY：小米 MiMo 的官方示例与控制台都用这个名字，
+   *   运维从控制台复制过来可以直接填，不必猜要改成什么变量名。
+   *   其他兼容服务商继续用通用的 AI_API_KEY。
+   */
+  private apiKey(): string {
+    return this.env.MIMO_API_KEY || this.env.AI_API_KEY || '';
+  }
+
   private chatUrl(): string {
     const base = this.env.AI_BASE_URL.replace(/\/+$/, '');
     if (!base) throw new AiProviderError('未配置 AI_BASE_URL', this.name, false);
@@ -187,6 +198,24 @@ export class OpenAiCompatProvider implements AiProvider {
           max_tokens: body.max_tokens,
         };
 
+        /*
+         * MiMo（小米）的深度思考开关。
+         *
+         * ★ 为什么默认**必须显式关掉**：
+         *   MiMo v2.5 系列默认开启深度思考，而开启状态会强制把
+         *   temperature / top_p 改成 1.0 / 0.95 —— 我们传的 0 被忽略。
+         *   票据抽取是"照着票面抄字段"，随机性只会带来偶发的字段错位，
+         *   没有任何好处。
+         *   另外思考内容与最终回答共享输出上限，长思考会把 JSON 挤掉，
+         *   表现为"输出被截断"这种很难查的失败。
+         *
+         * `thinking` 不是 OpenAI 标准参数，未知参数会让部分服务商直接 400，
+         * 所以用 AI_SEND_THINKING_PARAM 显式打开才发送。
+         */
+        if (this.env.AI_SEND_THINKING_PARAM) {
+          payload.thinking = { type: this.env.AI_THINKING_ENABLED ? 'enabled' : 'disabled' };
+        }
+
         // 能力探测：只有确认支持时才带 response_format，否则服务商会直接 400
         if (body.jsonMode && this.supportsJsonMode !== false) {
           payload.response_format = { type: 'json_object' };
@@ -265,7 +294,7 @@ export class OpenAiCompatProvider implements AiProvider {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          ...(this.env.AI_API_KEY ? { Authorization: `Bearer ${this.env.AI_API_KEY}` } : {}),
+          ...(this.apiKey() ? { Authorization: `Bearer ${this.apiKey()}` } : {}),
         },
         body: JSON.stringify(payload),
         signal: controller.signal,

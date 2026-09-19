@@ -58,6 +58,36 @@ export const envSchema = z.object({
   AI_PROVIDER: z.enum(['mock', 'openai-compatible', 'local']).default('mock'),
   AI_BASE_URL: z.string().optional().default(''),
   AI_API_KEY: z.string().optional().default(''),
+  /**
+   * MiMo（小米）专用 API Key。
+   *
+   * ★ 为什么单独一个变量而不是复用 AI_API_KEY：
+   *   MiMo 的官方示例与 Token Plan 控制台都用 MIMO_API_KEY 这个名字，
+   *   运维从控制台复制过来直接就能填，不必去猜要改名成什么。
+   *   AI_API_KEY 仍可用作通用回退（其他兼容服务商走那个）。
+   */
+  MIMO_API_KEY: z.string().optional().default(''),
+  /**
+   * 是否开启 MiMo 的深度思考（thinking.type = enabled / disabled）。
+   *
+   * ★ 默认关闭，这是刻意的：
+   *   ① MiMo v2.5 默认**开启**深度思考，而开启时 temperature / top_p
+   *      会被强制成 1.0 / 0.95 —— 对票据抽取来说这是把确定性丢掉了。
+   *   ② 思考内容与最终回答共享同一个输出上限，长思考会把 JSON 挤掉，
+   *      导致"输出被截断、JSON 不完整"。
+   *   ③ 抽取是照着票面抄字段，不需要多步推理，开着只是烧 token 和拖延迟。
+   *   需要它做复杂判断时（比如风险分析）再单独打开。
+   */
+  AI_THINKING_ENABLED: booleanish.default(false),
+  /**
+   * 是否在请求体里附带 `thinking` 参数。
+   *
+   * ★ 默认关闭，因为 `thinking` **不是 OpenAI 标准参数**：
+   *   大部分兼容服务商收到未知参数会直接 400。
+   *   只有 MiMo 这类明确支持它、且默认开启思考的服务商才该打开。
+   *   打开后按 AI_THINKING_ENABLED 决定 enabled / disabled。
+   */
+  AI_SEND_THINKING_PARAM: booleanish.default(false),
   AI_VISION_MODEL: z.string().optional().default(''),
   AI_TEXT_MODEL: z.string().optional().default(''),
   AI_TEMPERATURE: numeric.default(0),
