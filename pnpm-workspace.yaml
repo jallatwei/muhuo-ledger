@@ -20,4 +20,8 @@ allowBuilds:
   puppeteer: false # Chromium 由系统包提供（见 docker/dev/Dockerfile）
   '@nestjs/core': false # postinstall 仅打印赞助信息
   '@scarf/scarf': false # 遥测上报
-  vue-demi: true            # Pinia 的 Vue2/3 兼容层，需要生成一次存根
+  vue-demi: true # Pinia 的 Vue2/3 兼容层，需要生成一次存根
+  # canvas 是 pdfjs-dist 的**可选依赖**，只在"用 pdfjs 自己渲染 PDF"时才需要。
+  # 我们不用它渲染（PDF 转图片走 mupdf 的 WASM 实现），只要文本与坐标，
+  # 所以关掉：既省掉一次 node-gyp 原生编译，也少一个原生模块的攻击面。
+  canvas: false

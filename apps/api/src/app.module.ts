@@ -28,6 +28,7 @@ import { VoucherBookService } from './domain/printing/voucher-book.service';
 import { HistoryImportService } from './application/history/history-import.service';
 import { StatementImportService } from './application/history/statement-import.service';
 import { RecognitionIngestService } from './application/recognition/recognition-ingest.service';
+import { PdfRasterizer } from './infrastructure/pdf/pdf-rasterizer';
 import { DocumentRecognitionService } from './application/recognition/document-recognition.service';
 import { TaxFilingService } from './application/tax/tax-filing.service';
 import { TaxPolicyService } from './application/tax/tax-policy.service';
@@ -109,6 +110,7 @@ import { TaxController } from './interface/tax.controller';
     VoucherBookService,
     HistoryImportService,
     StatementImportService,
+    PdfRasterizer,
     RecognitionIngestService,
     DocumentRecognitionService,
     TaxFilingService,
