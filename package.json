@@ -5,7 +5,7 @@
   "description": "小企业自动记账系统：合同/发票导入 → 自动记账 → 凭证册 → 税务申报表",
   "packageManager": "pnpm@11.7.0",
   "engines": {
-    "node": ">=20"
+    "node": ">=22.13"
   },
   "scripts": {
     "dev": "pnpm -r --parallel --filter \"./apps/*\" dev",

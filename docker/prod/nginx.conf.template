@@ -1,0 +1,90 @@
+# =============================================================================
+#  Nginx —— 静态托管 + API 同源转发
+# =============================================================================
+#  这份模板由 nginx 官方镜像的 entrypoint 用 envsubst 渲染：
+#  只有 ${API_UPSTREAM} 会被替换（官方脚本默认只替换列在
+#  NGINX_ENVSUBST_* 里的变量，这里保持默认行为即可）。
+#
+#  ★ 不做 gzip 之外的任何"优化"（不缓存 HTML、不压缩图片），
+#    前端是有版本的 SPA，缓存策略搞错会出现"改了代码但用户看到旧页面"。
+# =============================================================================
+
+upstream bk_api {
+    server ${API_UPSTREAM};
+    keepalive 16;
+}
+
+server {
+    listen 80;
+    server_name _;
+
+    root /usr/share/nginx/html;
+    index index.html;
+
+    # 容器健康检查用的内部端点（不回显版本号等无用信息）
+    location = /nginx-health {
+        access_log off;
+        return 200 "ok\n";
+        add_header Content-Type text/plain;
+    }
+
+    # ---- API 同源转发 ----
+    location /api/ {
+        proxy_pass         http://bk_api;
+        proxy_http_version 1.1;
+        proxy_set_header   Host              $host;
+        proxy_set_header   X-Real-IP         $remote_addr;
+        proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto $scheme;
+        proxy_set_header   Connection        "";
+
+        # ★ 发票扫描件上传可能几十 MB，凭证册 HTML 也可能很大。
+        #   nginx 默认 1MB，不改会得到 413 —— 而 413 在浏览器里
+        #   只显示"上传失败"，看不出是网关拦的。
+        client_max_body_size 60m;
+
+        # AI 识图耗时可能超过 60s（我们的 AI_TIMEOUT_MS 默认 60000），
+        # 网关超时必须比它更宽，否则后端还在跑而连接被断，
+        # 前端会拿到一个没有响应体的错误。
+        proxy_read_timeout    180s;
+        proxy_send_timeout    180s;
+        proxy_connect_timeout 15s;
+
+        # 不缓冲响应：凭证册 HTML 与附件流式返回时更省内存
+        proxy_buffering off;
+    }
+
+    # ---- 静态资源 ----
+    # Vite 产物带内容哈希，可以长缓存
+    location /assets/ {
+        expires 1y;
+        add_header Cache-Control "public, immutable";
+        try_files $uri =404;
+    }
+
+    # ---- SPA 兜底 ----
+    # ★ 必须放在最后。history 模式下刷新 /vouchers/xxx 要回落到 index.html，
+    #   否则用户刷新页面会拿到 404 —— 而路由在前端是好的，看起来像"功能坏了"。
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+
+    # 不暴露 nginx 版本号
+    server_tokens off;
+
+    # 前端不提供目录列表
+    autoindex off;
+
+    gzip on;
+    gzip_comp_level 5;
+    gzip_min_length 1024;
+    gzip_proxied any;
+    gzip_types
+        text/plain
+        text/css
+        text/xml
+        application/json
+        application/javascript
+        application/xml+rss
+        image/svg+xml;
+}

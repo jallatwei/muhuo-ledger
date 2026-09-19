@@ -1,0 +1,75 @@
+# =============================================================================
+#  构建上下文排除清单
+# =============================================================================
+#  ★ 为什么必须有这个文件，而不是"让它拷进去也无所谓"：
+#
+#    ① **宿主的 node_modules 会把容器搞坏**。
+#       Windows 上装出来的依赖含 win32 原生二进制（Prisma 查询引擎、
+#       bcrypt、esbuild）。这些如果进了构建上下文，容器里的 pnpm install
+#       会以为依赖已就绪而跳过安装 —— 然后在 Linux 上加载 .node 文件失败。
+#       报错通常是 "invalid ELF header" 或 "cannot find module"，
+#       而原因（拷进来的是 Windows 版）非常难想到。
+#
+#    ② 构建上下文越小，docker build 越快。node_modules 动辄几百 MB。
+#
+#    ③ 密钥不进上下文。虽然 Dockerfile 里没有 COPY .env，
+#       但万一以后有人加了 `COPY . .`，这个文件就是最后一道防线。
+# =============================================================================
+
+# ---- 依赖与产物（容器内自己装、自己编）----
+**/node_modules
+**/dist
+**/.pnpm-store
+**/*.tsbuildinfo
+**/.vite
+
+# ---- 版本控制与 CI ----
+.git
+.gitignore
+.gitattributes
+.github
+
+# ---- 文档与设计（不影响构建，只为缩小上下文）----
+design
+docs
+*.md
+!README.md
+
+# ★ 构建与运行都需要的配置清单，绝不能排除。
+#   `*.yaml` 那行是 BuildKit 的 **递归** glob，会把根目录的
+#   pnpm-workspace.yaml、apps/api/package.json 一起吃掉 ——
+#   而 api.Dockerfile 的 COPY 明确要这两个文件，构建时就报找不到（或更糟：
+#   静默少拷，运行期才发现 workspace 结构不对）。
+!package.json
+!pnpm-lock.yaml
+!pnpm-workspace.yaml
+!**/package.json
+
+# ---- 密钥：绝不进构建上下文 ----
+**/.env
+**/.env.*
+!**/.env.*.example
+
+# ---- 运行时数据 ----
+deploy/volumes
+storage
+uploads
+**/coverage
+**/.nyc_output
+
+# ---- 本地工具 ----
+# ★ 不能整目录排除：apps/web 的 build 脚本要调 tools/check-routes.mjs
+#   （构建期静态校验路由链接，防止"点了按钮页面空白"那类静默失败）。
+#   所以放行 tools 下的 .mjs 构建期脚本，其余（9 套 verify-*.ps1、
+#   probe-mimo.ps1 等宿主验证脚本）不进镜像。
+tools/*.ps1
+tools/*.json
+tools/*.txt
+apps/api/tmp
+**/*.log
+**/.DS_Store
+**/Thumbs.db
+
+# ---- 编辑器 ----
+.idea
+.vscode

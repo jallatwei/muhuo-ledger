@@ -3,7 +3,7 @@
 #  业务依赖由 compose 的 command 在容器内 pnpm install（利用命名卷缓存）
 #  这样 Windows 宿主与 Linux 容器的原生依赖不会互相污染
 # =============================================================================
-FROM node:20-bookworm-slim
+FROM node:22-bookworm-slim
 
 ENV DEBIAN_FRONTEND=noninteractive \
     TZ=Asia/Shanghai \

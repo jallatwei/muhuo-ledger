@@ -1,0 +1,151 @@
+# =============================================================================
+#  本地 Docker 部署（生产形态，单机）
+# =============================================================================
+#  与 docker/dev/docker-compose.yml 的区别：
+#    dev   挂源码 + 热重载 + 端口直接暴露给宿主机
+#    prod  跑构建产物 + nginx 托管前端 + API 同源转发
+#
+#  ★ 不新建 Postgres 容器。
+#    复用已有的 bk-postgres（它跑在 bookkeeper-dev_default 网络里，
+#    别名就是 postgres），这样本地 Docker 部署与现有的开发库共用同一份数据 ——
+#    不必重新 seed、不必迁移历史数据，也不会有两个库各说各话的问题。
+#
+#    代价：这个部署**依赖 bk-postgres 先存在**。它是自托管单机场景的合理取舍；
+#    上云时应当换成云数据库（见 deploy/env/.env.prod.example 的说明）。
+#
+#  用法：
+#    cp deploy/env/.env.prod.example deploy/env/.env.prod   # 然后填 MIMO_API_KEY
+#    docker compose -f docker/prod/docker-compose.yml --env-file deploy/env/.env.prod up -d --build
+#    浏览器打开 http://localhost:8080
+# =============================================================================
+
+name: bookkeeper-prod
+
+services:
+  # ---------------------------------------------------------------- 后端 API
+  api:
+    build:
+      context: ../..
+      dockerfile: docker/prod/api.Dockerfile
+    image: bookkeeper-api:local
+    container_name: bk-api-prod
+    restart: unless-stopped
+    # ★ api 必须同时加入两个网络：
+    #   bkdb   —— 连数据库（复用已有的 bk-postgres）
+    #   appnet —— 让 web 容器能按服务名解析到 api
+    #   只加 bkdb 的话，api 就落在 bkdb 上、web 落在默认网络上，两边互相看不见，
+    #   nginx 的 proxy_pass http://api:3000 会直接 DNS 解析失败（502）。
+    networks:
+      - bkdb
+      - appnet
+    environment:
+      # NODE_ENV=production 会自动关掉 /api/docs（见 main.ts）
+      NODE_ENV: production
+      TZ: ${TZ:-Asia/Shanghai}
+      HOST: 0.0.0.0
+      API_PORT: 3000
+      API_BASE_URL: ${API_BASE_URL:-http://localhost:8080/api}
+      # ★ 浏览器只访问 http://localhost:8080，API 由 nginx 同源转发，
+      #   所以这里只需要放行前端自己的来源。
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:8080}
+      DATABASE_URL: ${DATABASE_URL}
+      JWT_SECRET: ${JWT_SECRET}
+      JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-12h}
+      # ★ 本地 Docker 部署保持 true：这是个能真实访问的部署，
+      #   不该让任何人免登录读账。反面：tools/ 里的 e2e 脚本不带令牌，
+      #   对着这个部署会全 401 —— 它们该打宿主 dev 的 API（3000）。
+      AUTH_REQUIRED: ${AUTH_REQUIRED:-true}
+
+      # ---- 单据存储（本地卷；上云必须换对象存储，见 api.Dockerfile 注释）----
+      STORAGE_DRIVER: ${STORAGE_DRIVER:-local}
+      STORAGE_LOCAL_ROOT: /data/attachments
+      STORAGE_MAX_FILE_MB: ${STORAGE_MAX_FILE_MB:-50}
+
+      # ---- AI 识图（小米 MiMo）----
+      AI_PROVIDER: ${AI_PROVIDER:-openai-compatible}
+      AI_BASE_URL: ${AI_BASE_URL:-}
+      AI_API_KEY: ${AI_API_KEY:-}
+      MIMO_API_KEY: ${MIMO_API_KEY:-}
+      AI_VISION_MODEL: ${AI_VISION_MODEL:-}
+      AI_TEXT_MODEL: ${AI_TEXT_MODEL:-}
+      AI_TEMPERATURE: ${AI_TEMPERATURE:-0}
+      AI_TIMEOUT_MS: ${AI_TIMEOUT_MS:-60000}
+      AI_MAX_RETRIES: ${AI_MAX_RETRIES:-2}
+      AI_DAILY_BUDGET: ${AI_DAILY_BUDGET:-20}
+      # ★ MiMo 的深度思考默认开启，而开启会强制 temperature=1.0，
+      #   把票据抽取的确定性丢掉。所以发这个参数并显式关掉。
+      AI_SEND_THINKING_PARAM: ${AI_SEND_THINKING_PARAM:-false}
+      AI_THINKING_ENABLED: ${AI_THINKING_ENABLED:-false}
+      OCR_MIN_CONFIDENCE: ${OCR_MIN_CONFIDENCE:-0.85}
+      AI_SUGGEST_MIN_CONFIDENCE: ${AI_SUGGEST_MIN_CONFIDENCE:-0.75}
+
+      # ---- 记账行为（这三条直接关系到"会不会记错账"）----
+      BOOKKEEPING_AUTO_POST: ${BOOKKEEPING_AUTO_POST:-false}
+      BOOKKEEPING_AUTO_POST_MAX_AMOUNT: ${BOOKKEEPING_AUTO_POST_MAX_AMOUNT:-1000}
+      BOOKKEEPING_DB_CONSTRAINTS: ${BOOKKEEPING_DB_CONSTRAINTS:-true}
+      RULE_PROMOTION_THRESHOLD: ${RULE_PROMOTION_THRESHOLD:-3}
+
+      # ---- 后台作业 ----
+      JOB_WORKER_ENABLED: ${JOB_WORKER_ENABLED:-true}
+      JOB_POLL_INTERVAL_MS: ${JOB_POLL_INTERVAL_MS:-2000}
+      JOB_BATCH_SIZE: ${JOB_BATCH_SIZE:-5}
+
+      # ---- 启动时自动迁移（单实例=true；多实例必须改 false）----
+      MIGRATE_ON_START: ${MIGRATE_ON_START:-true}
+
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      LOG_PRETTY: ${LOG_PRETTY:-false}
+    volumes:
+      # 单据原件。★ 必须挂卷：容器可写层是临时的，重启就丢发票原件，
+      # 而发票原件是这套系统的审计凭证。
+      - attachments:/data/attachments
+    # 不直接暴露给宿主机 —— 一律经 nginx 同源转发。
+    # 需要直连调试时把下面两行取消注释。
+    # ports:
+    #   - "3000:3000"
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+      interval: 15s
+      timeout: 5s
+      start_period: 45s
+      retries: 5
+
+  # ---------------------------------------------------------------- 前端 Web
+  web:
+    build:
+      context: ../..
+      dockerfile: docker/prod/web.Dockerfile
+      args:
+        # ★ 留空 = 前端用相对路径 /api，由 nginx 同源转发。
+        #   塞绝对地址会导致跨域、还要重新构建才能换域名。
+        PUBLIC_API_BASE_URL: ${PUBLIC_API_BASE_URL:-}
+    image: bookkeeper-web:local
+    container_name: bk-web-prod
+    restart: unless-stopped
+    environment:
+      API_UPSTREAM: api:3000
+    ports:
+      - "${WEB_HOST_PORT:-8080}:80"
+    networks:
+      - appnet
+    depends_on:
+      api:
+        condition: service_healthy
+
+networks:
+  # 已有的开发库网络。external 表示"这个网络不由本 compose 创建"，
+  # 所以 up 之前它必须已经存在（bk-postgres 在跑就满足）。
+  bkdb:
+    external: true
+    name: bookkeeper-dev_default
+  # api ↔ web 的内部网络。web 不需要碰数据库，所以它只挂 appnet，
+  # 数据库网络里少一个容器就少一条能被打穿的路径。
+  appnet:
+
+volumes:
+  attachments:
+    name: bk-attachments-prod
