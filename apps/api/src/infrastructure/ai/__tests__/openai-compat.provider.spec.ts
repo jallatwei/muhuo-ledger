@@ -227,6 +227,24 @@ describe('认证与请求体', () => {
     expect(calls[0]!.headers.authorization).toBeUndefined();
   });
 
+  it('MIMO_API_KEY 优先于 AI_API_KEY（MiMo 控制台的变量名可以直接填）', async () => {
+    const p = makeProvider({ MIMO_API_KEY: 'mimo-key-xyz', AI_API_KEY: 'generic-key' });
+    await p.chat({ messages: [{ role: 'user', content: 'hi' }], purpose: 'ANOMALY' });
+    expect(calls[0]!.headers.authorization).toBe('Bearer mimo-key-xyz');
+  });
+
+  it('只填 MIMO_API_KEY、AI_API_KEY 留空时依然发出鉴权头', async () => {
+    const p = makeProvider({ MIMO_API_KEY: 'mimo-only', AI_API_KEY: '' });
+    await p.chat({ messages: [{ role: 'user', content: 'hi' }], purpose: 'ANOMALY' });
+    expect(calls[0]!.headers.authorization).toBe('Bearer mimo-only');
+  });
+
+  it('两个 Key 都为空时才不带鉴权头', async () => {
+    const p = makeProvider({ MIMO_API_KEY: '', AI_API_KEY: '' });
+    await p.chat({ messages: [{ role: 'user', content: 'hi' }], purpose: 'ANOMALY' });
+    expect(calls[0]!.headers.authorization).toBeUndefined();
+  });
+
   it('system 与 messages 按顺序合并，system 在最前', async () => {
     const p = makeProvider();
     await p.chat({

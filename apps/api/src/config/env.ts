@@ -134,6 +134,20 @@ export function validateEnv(raw: Record<string, unknown>): Env {
 }
 
 /**
+ * 解析「实际生效的 AI 密钥」。
+ * ============================================================
+ * ★ 这里必须是**唯一**的取值口径 —— provider 真正发出去的就是这个值。
+ *   曾经这个优先级在两处各写了一份：provider 用
+ *   `MIMO_API_KEY || AI_API_KEY`，而这里的健康自检只看 AI_API_KEY。
+ *   于是用户填了 MIMO_API_KEY 之后，/api/health 仍然报
+ *   「AI_API_KEY 未配置」—— 一条把人指向错误排查方向的假告警，
+ *   而它恰好出现在"接入模型第一步"最需要准确反馈的时刻。
+ */
+export function resolveAiApiKey(env: Pick<Env, 'MIMO_API_KEY' | 'AI_API_KEY'>): string {
+  return env.MIMO_API_KEY || env.AI_API_KEY || '';
+}
+
+/**
  * AI 配置完整性与安全提示。
  * 不阻断启动（mock 模式是合法的），但要在日志里说清楚。
  */
@@ -149,8 +163,8 @@ export function describeAiConfig(env: Env): { warnings: string[]; summary: strin
 
   if (!env.AI_BASE_URL) warnings.push('AI_BASE_URL 未配置，识图将无法调用真实模型');
   if (!env.AI_VISION_MODEL) warnings.push('AI_VISION_MODEL 未配置，无法识图');
-  if (!env.AI_API_KEY && !env.AI_BASE_URL.includes('localhost') && !env.AI_BASE_URL.includes('host.docker.internal')) {
-    warnings.push('AI_API_KEY 未配置，云端模型服务会拒绝请求');
+  if (!resolveAiApiKey(env) && !env.AI_BASE_URL.includes('localhost') && !env.AI_BASE_URL.includes('host.docker.internal')) {
+    warnings.push('未配置 AI 密钥（MIMO_API_KEY 或 AI_API_KEY），云端模型服务会拒绝请求');
   }
 
   return {

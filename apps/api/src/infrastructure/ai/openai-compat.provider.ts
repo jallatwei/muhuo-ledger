@@ -27,7 +27,7 @@ import {
   type ProviderHealth,
   type VisionRequest,
 } from './ai-provider.interface';
-import type { Env } from '../../config/env';
+import { resolveAiApiKey, type Env } from '../../config/env';
 
 interface OpenAiChoice {
   message?: { content?: string | null };
@@ -72,9 +72,12 @@ export class OpenAiCompatProvider implements AiProvider {
    * ★ 优先 MIMO_API_KEY：小米 MiMo 的官方示例与控制台都用这个名字，
    *   运维从控制台复制过来可以直接填，不必猜要改成什么变量名。
    *   其他兼容服务商继续用通用的 AI_API_KEY。
+   *
+   * ★ 优先级只在 resolveAiApiKey 里定义一次：健康自检也要报同一件事，
+   *   两处各写一份的话，一旦不一致就会出现"填了 key 却报 key 未配置"。
    */
   private apiKey(): string {
-    return this.env.MIMO_API_KEY || this.env.AI_API_KEY || '';
+    return resolveAiApiKey(this.env);
   }
 
   private chatUrl(): string {
