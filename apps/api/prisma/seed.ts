@@ -29,6 +29,16 @@ const DEMO_ENTITY_NAME = process.env.SEED_ENTITY_NAME ?? '演示科技有限公�
 const DEMO_ENTITY_TAXNO = process.env.SEED_ENTITY_TAXNO ?? '91310000MA1DEMO001';
 const ADMIN_EMAIL = process.env.SEED_ADMIN_EMAIL ?? 'admin@bookkeeper.local';
 const ADMIN_PASSWORD = process.env.SEED_ADMIN_PASSWORD ?? 'admin12345';
+
+/**
+ * 测试账号。
+ *
+ * ★ 密码刻意短且好记 —— 这是本地开发/演示的便利，**不是可上线的配置**。
+ *   它满足密码策略下限（≥8 位、非纯数字），刚好卡在能被记住的地方。
+ *   所以它只在非生产环境创建（见 assertNotProduction），上云前必须删除。
+ */
+const TRIAL_EMAIL = process.env.SEED_TRIAL_EMAIL ?? 'test@bookkeeper.local';
+const TRIAL_PASSWORD = process.env.SEED_TRIAL_PASSWORD ?? 'test1234';
 const SEED_YEAR = Number(process.env.SEED_YEAR ?? new Date().getFullYear());
 // 科目辅助计算（computeLevel / computeFullName / computeIsLeaf）已抽到
 // src/domain/accounting/account-tree.ts —— 公司注册时要用同一套口径，
@@ -335,10 +345,92 @@ async function seedAdmin(entityId: string) {
 }
 
 // ============================================================================
+//  测试账号
+// ============================================================================
+
+/**
+ * 一个便于手工试用/演示的账号。
+ *
+ * ★ 为什么不给它平台管理员权限：
+ *   演示账号要演示的是"一家公司的账"，不是运维排障。
+ *   给它跨主体看数据的权限超出用途。它只需要是演示主体的 OWNER，
+ *   就足够验证全部记账、结账、报表功能。
+ */
+async function seedTrialUser(entityId: string) {
+  const passwordHash = await bcrypt.hash(TRIAL_PASSWORD, 12);
+
+  const user = await prisma.user.upsert({
+    where: { email: TRIAL_EMAIL },
+    create: {
+      email: TRIAL_EMAIL,
+      passwordHash,
+      displayName: '测试账号',
+      accountType: 'COMPANY_STAFF',
+      isPlatformAdmin: false,
+    },
+    // ★ 每次 seed 都把密码重置回 TRIAL_PASSWORD。
+    //   否则试用中改过密码之后就再也进不去了 ——
+    //   而"重跑 seed 就能恢复默认口令"正是这个账号存在的意义。
+    update: { passwordHash },
+  });
+
+  const membership = await prisma.membership.findUnique({
+    where: { userId_entityId: { userId: user.id, entityId } },
+  });
+  if (!membership) {
+    await prisma.membership.create({
+      data: { userId: user.id, entityId, role: 'OWNER' },
+    });
+  }
+
+  console.log(`  · 测试账号已就绪：${TRIAL_EMAIL} / ${TRIAL_PASSWORD}（演示主体的实控人）`);
+  console.log('    ⚠️ 仅供本地试用与演示，上云前务必删除');
+}
+
+// ============================================================================
+//  安全闸门
+// ============================================================================
+
+/**
+ * 拒绝在生产环境执行。
+ *
+ * ★ 为什么要有这道闸门，而不是只在 README 里提醒：
+ *   这个脚本会往库里灌**固定弱口令**的账号。一次疏忽（在生产机上顺手跑
+ *   `pnpm seed` 想"初始化一下"）就等于在网络里留了一个公开口令的入口。
+ *   文档提醒会被忽略，工具拒绝执行不会。
+ *
+ * ★ 逃生舱 SEED_ALLOW_PRODUCTION=true 是给"故意要在生产里灌演示数据"
+ *   的极端场景留的（比如给客户做在线试用环境）。默认必须踩不响。
+ */
+function assertNotProduction(): void {
+  const env = process.env.NODE_ENV ?? 'development';
+  if (env !== 'production') return;
+  if ((process.env.SEED_ALLOW_PRODUCTION ?? '').toLowerCase() === 'true') {
+    console.warn('\n⚠️  已在生产环境强制执行 seed（SEED_ALLOW_PRODUCTION=true）');
+    console.warn('   这会在生产库里创建固定弱口令的账号，请确认这是你要的\n');
+    return;
+  }
+  console.error(
+    '\n❌ 拒绝在生产环境执行 seed。\n\n' +
+      '   原因：这个脚本会创建\n' +
+      `     · 演示主体「${DEMO_ENTITY_NAME}」\n` +
+      `     · 固定口令的管理员账号（${ADMIN_EMAIL} / ${ADMIN_PASSWORD}）\n` +
+      `     · 固定口令的测试账号（${TRIAL_EMAIL} / ${TRIAL_PASSWORD}）\n` +
+      '   在生产库里留下这些等于留了一个公开口令的入口。\n\n' +
+      '   如果你确实要在生产环境灌演示数据，显式声明：\n' +
+      '     SEED_ALLOW_PRODUCTION=true pnpm --filter @bookkeeper/api seed\n',
+  );
+  process.exit(1);
+}
+
+// ============================================================================
 //  主流程
 // ============================================================================
 
 async function main() {
+  // ★ 第一件事就是拦生产环境 —— 任何写入之前
+  assertNotProduction();
+
   console.log('');
   console.log('════════════════════════════════════════════════════════');
   console.log('  小企业自动记账系统 — 种子数据初始化');
@@ -364,6 +456,7 @@ async function main() {
 
   console.log('\n[7/7] 用户');
   await seedAdmin(entity.id);
+  await seedTrialUser(entity.id);
 
   console.log('\n════════════════════════════════════════════════════════');
   console.log('  ✅ 初始化完成');
@@ -373,6 +466,7 @@ async function main() {
   console.log(`  纳税人  : 一般纳税人（增值税月报）`);
   console.log(`  会计年度: ${SEED_YEAR}`);
   console.log(`  登录账号: ${ADMIN_EMAIL} / ${ADMIN_PASSWORD}`);
+  console.log(`  测试账号: ${TRIAL_EMAIL} / ${TRIAL_PASSWORD}   ← 本地试用，上云前删除`);
   console.log('');
 }
 
