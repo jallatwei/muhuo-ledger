@@ -22,6 +22,7 @@ import { Decimal, VALID_TAX_RATES, assertTaxConsistency, dec, round2 } from '@bo
 import {
   PASSENGER_TRANSPORT_RATE,
   detectPassengerTransportKind,
+  isNonDeductibleTaxiVoucher,
   reconcileTaxSplit,
 } from './tax-split';
 
@@ -124,6 +125,7 @@ export function validateExtraction(
 ): ValidationOutcome {
   const findings: ValidationFinding[] = [];
   const push = (f: ValidationFinding) => findings.push(f);
+  let normalizedAmounts: ValidationOutcome['normalizedAmounts'];
 
   /*
    * ★ 先做价外税勾稽协调，再跑 V1~V12。
@@ -138,6 +140,41 @@ export function validateExtraction(
    *   是算出来的。
    */
   const statutoryRate = statutoryRateFor(rawInvoice);
+
+  /*
+   * ★ 出租车卷式 / 通用机打发票：强制进项税额为 0。
+   *
+   *   它属于公路运输，而 13号公告给"列明旅客身份信息的公路、水路等其他客票"
+   *   规定的是 ÷(1+3%)×3%。若不专门拦住，一旦模型（或将来某段逻辑）
+   *   看到"出租车"就按 3% 倒算，就会给一张**本来不能抵扣**的凭证
+   *   凭空算出进项税 —— 每 100 元车费多抵 2.91 元，是实打实的少缴税风险。
+   *
+   *   不可抵扣的原因是"未注明旅客身份信息、且不是增值税扣税凭证"，
+   *   不是"免税"。两者税额都为 0，但口径必须说对。
+   */
+  const nonDeductibleTaxi = isNonDeductibleTaxiVoucher(rawInvoice.category);
+  if (nonDeductibleTaxi) {
+    const incl = dec(rawInvoice.amountInclTax ?? 0);
+    normalizedAmounts = {
+      amountExclTax: round2(incl).toFixed(2),
+      taxRate: '0',
+      taxAmount: '0.00',
+      amountInclTax: round2(incl).toFixed(2),
+    };
+    push({
+      code: 'V14',
+      level: rawInvoice.taxAmount != null && !dec(rawInvoice.taxAmount).isZero() ? 'WARN' : 'INFO',
+      message:
+        '该凭证是出租车卷式/通用机打发票，**不是增值税扣税凭证**：未注明旅客身份信息，' +
+        '不属于 13号公告允许计算抵扣的"列明旅客身份信息的公路、水路等其他客票"。' +
+        '进项税额为 0，票面全额计入费用。',
+      suggestion:
+        '不要按公路运输 3% 去倒算进项税 —— 那会凭空多抵。' +
+        '若对方能开增值税电子普通发票（列明税额），可凭票抵扣，此时请换票重传。',
+      fields: ['taxAmount', 'taxRate'],
+    });
+  }
+
   /*
    * ★ 只对旅客运输凭证倒算。
    *
@@ -146,21 +183,46 @@ export function validateExtraction(
    *   那等于用一个新算的数把"模型没读出来"这件事盖住。
    *   statutoryRateFor() 对非旅客运输凭证返回 null，正好当这个开关。
    */
-  const split = statutoryRate
-    ? reconcileTaxSplit(rawInvoice, statutoryRate)
-    : { verdict: 'INSUFFICIENT' as const };
-  const invoice: ExtractionForValidation =
-    split.verdict === 'DERIVED'
-      ? {
-          ...rawInvoice,
-          amountExclTax: split.amountExclTax,
-          taxRate: split.taxRate,
-          taxAmount: split.taxAmount,
-          amountInclTax: split.amountInclTax,
-        }
-      : rawInvoice;
+  const split =
+    statutoryRate && !nonDeductibleTaxi
+      ? reconcileTaxSplit(rawInvoice, statutoryRate)
+      : { verdict: 'INSUFFICIENT' as const };
 
-  let normalizedAmounts: ValidationOutcome['normalizedAmounts'];
+  const invoice: ExtractionForValidation =
+    nonDeductibleTaxi
+      ? { ...rawInvoice, ...normalizedAmounts }
+      : split.verdict === 'DERIVED'
+        ? {
+            ...rawInvoice,
+            amountExclTax: split.amountExclTax,
+            taxRate: split.taxRate,
+            taxAmount: split.taxAmount,
+            amountInclTax: split.amountInclTax,
+          }
+        : rawInvoice;
+
+  /*
+   * ★ 旅客运输进项税抵扣口径留痕。
+   *
+   *   13号公告把可抵扣范围限定在与本单位**签订劳动合同的员工**及劳务派遣员工。
+   *   发票上只有身份证号，系统无从判断劳动关系 —— 按约定**默认乘车人为本单位
+   *   员工**处理，不因此拦人工。但假设必须写在明面上：
+   *   万一是外聘专家或客户，这笔进项税不得抵扣，需要人工调整。
+   */
+  if (statutoryRate && !nonDeductibleTaxi) {
+    push({
+      code: 'V15',
+      level: 'INFO',
+      message:
+        `旅客运输进项税抵扣：按财政部 税务总局公告2026年第13号 第一条第（二）项，` +
+        `该凭证可抵扣，已按法定 ${(dec(statutoryRate).times(100)).toString()}% 倒算进项税额。`,
+      suggestion:
+        '系统默认乘车人为本单位员工（含劳务派遣）。若实际为外聘专家、客户等非雇员，' +
+        '或用于集体福利、个人消费，该进项税额**不得抵扣**，请人工调整。',
+      fields: ['taxAmount'],
+    });
+  }
+
   if (split.verdict === 'DERIVED') {
     normalizedAmounts = {
       amountExclTax: split.amountExclTax ?? '',

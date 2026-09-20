@@ -441,3 +441,122 @@ describe('综合场景：Mock 样例的实际表现', () => {
     expect(r.failCount).toBeGreaterThanOrEqual(1);
   });
 });
+
+describe('V14 · 出租车卷式发票——不是扣税凭证，进项税必须为 0', () => {
+  /** 出租车卷式发票：票面只有金额，没有税额、没有买方 */
+  const taxi = (overrides: Partial<ExtractionForValidation> = {}): ExtractionForValidation => ({
+    direction: null,
+    category: '出租车发票',
+    invoiceCode: '113002134010',
+    invoiceNumber: '26951124',
+    invoiceDate: '2026-03-06',
+    sellerName: '翔龙出租',
+    amountExclTax: '69.70',
+    taxRate: '0',
+    taxAmount: '0',
+    amountInclTax: '69.70',
+    isRedFlushed: false,
+    ...overrides,
+  });
+
+  it('给出 V14 说明"不是扣税凭证"，而不是含糊地说"免税"', () => {
+    const out = validateExtraction(taxi(), ENTITY);
+    const v14 = out.findings.find((f) => f.code === 'V14');
+    expect(v14).toBeDefined();
+    expect(v14!.message).toContain('不是增值税扣税凭证');
+    expect(v14!.message).toContain('旅客身份信息');
+    // 不能说成免税 —— 出租车服务不是免税，是凭证不合格
+    expect(v14!.message).not.toContain('免税');
+  });
+
+  it('★ 模型若按公路运输 3% 倒算出进项税，必须被清成 0 并升级为 WARN', () => {
+    // 每 100 元车费会被多抵 2.91 元 —— 这是少缴税风险，不能悄悄放过
+    const out = validateExtraction(
+      taxi({ taxRate: '0.03', taxAmount: '2.03', amountExclTax: '67.67' }),
+      ENTITY,
+    );
+    const v14 = out.findings.find((f) => f.code === 'V14')!;
+    expect(v14.level).toBe('WARN');
+    expect(out.normalizedAmounts).toMatchObject({
+      taxAmount: '0.00',
+      taxRate: '0',
+      amountExclTax: '69.70',
+      amountInclTax: '69.70',
+    });
+  });
+
+  it('票面全额计入费用：不含税 = 含税，税额 = 0', () => {
+    const out = validateExtraction(taxi(), ENTITY);
+    expect(out.normalizedAmounts).toMatchObject({
+      amountExclTax: '69.70',
+      taxAmount: '0.00',
+      amountInclTax: '69.70',
+    });
+    // 勾稽仍要成立
+    const v1 = out.findings.find((f) => f.code === 'V1')!;
+    expect(v1.level).toBe('PASS');
+  });
+
+  it('★ 网约车/出租车公司开的增值税电子普通发票**不**被清零（那是合规扣税凭证）', () => {
+    const out = validateExtraction(
+      taxi({
+        category: '增值税电子普通发票（运输服务）',
+        taxRate: '0.03',
+        taxAmount: '2.03',
+        amountExclTax: '67.67',
+        amountInclTax: '69.70',
+      }),
+      ENTITY,
+    );
+    expect(out.findings.find((f) => f.code === 'V14')).toBeUndefined();
+  });
+});
+
+describe('V15 · 旅客运输进项税抵扣口径留痕', () => {
+  const train = (overrides: Partial<ExtractionForValidation> = {}): ExtractionForValidation => ({
+    direction: null,
+    category: '电子发票（铁路电子客票）',
+    invoiceNumber: '26119121152002953432',
+    invoiceDate: '2026-04-22',
+    sellerName: '中国铁路',
+    buyerName: '煤炭工业规划设计研究院有限公司',
+    amountExclTax: '41.00',
+    taxRate: '0',
+    taxAmount: '0',
+    amountInclTax: '41.00',
+    isRedFlushed: false,
+    ...overrides,
+  });
+
+  it('给出 V15，说明可抵扣依据并按法定税率倒算', () => {
+    const out = validateExtraction(train(), ENTITY);
+    const v15 = out.findings.find((f) => f.code === 'V15');
+    expect(v15).toBeDefined();
+    expect(v15!.message).toContain('2026年第13号');
+    expect(v15!.message).toContain('9%');
+  });
+
+  it('★ 把"默认按员工处理"这个假设写在明面上，而不是默默假定', () => {
+    const out = validateExtraction(train(), ENTITY);
+    const v15 = out.findings.find((f) => f.code === 'V15')!;
+    expect(v15.suggestion).toContain('员工');
+    // 非雇员/集体福利的情形必须提示需人工调整
+    expect(v15.suggestion).toContain('不得抵扣');
+  });
+
+  it('V15 是 INFO，不折减置信度、不把单据推去人工', () => {
+    const out = validateExtraction(train(), ENTITY);
+    expect(out.findings.find((f) => f.code === 'V15')!.level).toBe('INFO');
+    // INFO 不计入 warnCount，否则铁路票会被无谓地打回人工
+    expect(out.findings.filter((f) => f.level === 'WARN' && f.code === 'V15')).toHaveLength(0);
+  });
+
+  it('出租车那张不会拿到 V15（它不该走可抵扣口径）', () => {
+    const out = validateExtraction(
+      { ...train(), category: '出租车发票', invoiceCode: '113002134010' },
+      ENTITY,
+    );
+    expect(out.findings.find((f) => f.code === 'V15')).toBeUndefined();
+    expect(out.findings.find((f) => f.code === 'V14')).toBeDefined();
+  });
+});
