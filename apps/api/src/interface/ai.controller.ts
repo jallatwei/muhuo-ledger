@@ -295,8 +295,20 @@ export class AiController {
       threshold: env.OCR_MIN_CONFIDENCE,
     });
 
+    /*
+     * ★ 倒算结果必须覆盖模型返回的金额。
+     *
+     *   validateExtraction 只返回 findings，不改数据；如果这里不覆盖，
+     *   前端拿到的仍是模型那组自相矛盾的数（不含税 41 + 税额 3.38 ≠ 含税 41），
+     *   用户确认之后保存的也是它 —— 倒算就白算了，而且这种错更难被发现。
+     */
+    const responseData = outcome.normalizedAmounts
+      ? { ...preview.data, ...outcome.normalizedAmounts }
+      : preview.data;
+
     return {
       ...base,
+      preview: { ...preview, data: responseData },
       validation: {
         hasFailure: outcome.hasFailure,
         failCount: outcome.failCount,
@@ -427,8 +439,13 @@ export class AiController {
       threshold: env.OCR_MIN_CONFIDENCE,
     });
 
+    // 同 recognize：倒算出的金额必须覆盖模型返回的金额，否则倒算白算
+    const extractData = outcome.normalizedAmounts
+      ? { ...preview.data, ...outcome.normalizedAmounts }
+      : preview.data;
+
     return {
-      preview,
+      preview: { ...preview, data: extractData },
       validation: {
         hasFailure: outcome.hasFailure,
         failCount: outcome.failCount,

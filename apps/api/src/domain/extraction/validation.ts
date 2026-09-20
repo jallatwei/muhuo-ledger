@@ -19,6 +19,11 @@
  *   V12 卖方是否已在往来单位档案中         INFO
  */
 import { Decimal, VALID_TAX_RATES, assertTaxConsistency, dec, round2 } from '@bookkeeper/shared';
+import {
+  PASSENGER_TRANSPORT_RATE,
+  detectPassengerTransportKind,
+  reconcileTaxSplit,
+} from './tax-split';
 
 export type ValidationLevel = 'PASS' | 'WARN' | 'FAIL' | 'INFO';
 
@@ -71,6 +76,19 @@ export interface ValidationOutcome {
   hasFailure: boolean;
   warnCount: number;
   failCount: number;
+  /**
+   * 系统按价外税公式倒算出来的金额。仅当票面未列明税额、需要倒算时存在。
+   *
+   * ★ 上层**必须**用它覆盖模型返回的金额。
+   *   否则倒算只让校验通过了，实际展示与保存的仍是模型那组自相矛盾的数 ——
+   *   等于白算，而且更难发现。
+   */
+  normalizedAmounts?: {
+    amountExclTax: string;
+    taxRate: string;
+    taxAmount: string;
+    amountInclTax: string;
+  };
 }
 
 const AMOUNT_UPPER_LIMIT = new Decimal('10000000'); // 1000 万
@@ -101,11 +119,68 @@ function sameParty(a: string | null | undefined, b: string | null | undefined): 
  * ★ 主校验入口
  */
 export function validateExtraction(
-  invoice: ExtractionForValidation,
+  rawInvoice: ExtractionForValidation,
   entity: EntityContext,
 ): ValidationOutcome {
   const findings: ValidationFinding[] = [];
   const push = (f: ValidationFinding) => findings.push(f);
+
+  /*
+   * ★ 先做价外税勾稽协调，再跑 V1~V12。
+   *
+   *   顺序很重要：V1 的意义是"票面三元组自洽"，而旅客运输类凭证
+   *   （铁路电子客票、航空行程单）票面上**只有含税票价**，不含税与税额
+   *   本来就没印，是模型自己算的 —— 拿一个模型算错的数去跑勾稽，
+   *   只会得到一条"识别有误"的误导性结论。
+   *
+   *   所以这里先按法定税率把不含税与税额算出来，V1 再校验算出来的结果。
+   *   倒算发生过就必须留痕（V1D，INFO），让用户看见这个数不是抄来的、
+   *   是算出来的。
+   */
+  const statutoryRate = statutoryRateFor(rawInvoice);
+  /*
+   * ★ 只对旅客运输凭证倒算。
+   *
+   *   专票/普票的票面本来就印了不含税与税额，模型没读到时应当照旧报
+   *   "金额字段不完整"让人工补，而不是拿含税倒算出一个看着对的数 ——
+   *   那等于用一个新算的数把"模型没读出来"这件事盖住。
+   *   statutoryRateFor() 对非旅客运输凭证返回 null，正好当这个开关。
+   */
+  const split = statutoryRate
+    ? reconcileTaxSplit(rawInvoice, statutoryRate)
+    : { verdict: 'INSUFFICIENT' as const };
+  const invoice: ExtractionForValidation =
+    split.verdict === 'DERIVED'
+      ? {
+          ...rawInvoice,
+          amountExclTax: split.amountExclTax,
+          taxRate: split.taxRate,
+          taxAmount: split.taxAmount,
+          amountInclTax: split.amountInclTax,
+        }
+      : rawInvoice;
+
+  let normalizedAmounts: ValidationOutcome['normalizedAmounts'];
+  if (split.verdict === 'DERIVED') {
+    normalizedAmounts = {
+      amountExclTax: split.amountExclTax ?? '',
+      taxRate: split.taxRate ?? '',
+      taxAmount: split.taxAmount ?? '',
+      amountInclTax: split.amountInclTax ?? '',
+    };
+    push({
+      code: 'V1D',
+      level: 'INFO',
+      message: split.note,
+      suggestion: '该金额由系统按价外税公式计算，不是票面列明的数字；如有疑问请核对票面。',
+      fields: ['amountExclTax', 'taxAmount', 'taxRate'],
+    });
+  }
+  /*
+   * CONFLICT 刻意**不**在这里另报一条失败：
+   * 倒算失败时票面三元组本身就不自洽，下面的 V1 会以
+   * 「差异 X.XX 元」这种更具体的形式报出来，多报一条只是噪声。
+   */
 
   // ---------------------------------------------------------------- V1
   const hasAllAmounts =
@@ -408,6 +483,8 @@ export function validateExtraction(
     hasFailure: failCount > 0,
     warnCount,
     failCount,
+    // 只有真发生过倒算才带上，避免上层误以为"一直有归一化后的金额"
+    ...(normalizedAmounts ? { normalizedAmounts } : {}),
   };
 }
 
@@ -479,4 +556,16 @@ export function decideRouting(params: {
     reason: `校验全部通过，识别置信度 ${(overallConfidence * 100).toFixed(0)}%`,
     lowConfidenceFields: [],
   };
+}
+
+/**
+ * 该凭证的**法定**税率。
+ *
+ * 只对旅客运输凭证返回，且由凭证类型决定，不看模型报的税率 ——
+ * 13号公告对铁路/航空与公路水路规定的税率不同（9% / 3%），
+ * 认错类型就会算错税额。其他单据（专票、普票）票面本来就印了税率，不需要。
+ */
+function statutoryRateFor(invoice: ExtractionForValidation): string | null {
+  const kind = detectPassengerTransportKind(invoice.category);
+  return kind ? PASSENGER_TRANSPORT_RATE[kind] : null;
 }
