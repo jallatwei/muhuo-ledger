@@ -1,3 +1,4 @@
+import { deductibleByVoucherType, type VoucherType } from '../domain/tax/voucher-type';
 /**
  * 发票接口
  * ============================================================
@@ -33,7 +34,8 @@ import { buildInvoiceDedupHash, DEDUP_NS_INVOICE } from '../common/dedup';
 export interface CreateInvoiceInput {
   entityId: string;
   direction: 'INPUT' | 'OUTPUT';
-  category?: 'SPECIAL_VAT' | 'GENERAL_VAT' | 'E_INVOICE' | 'TRAIN' | 'AIR' | 'TOLL' | 'OTHER';
+  /** 受控的进项凭证类型；不传按 OTHER（没认出来）处理，绝不默认成专票 */
+  category?: VoucherType;
   invoiceCode?: string | null;
   invoiceNumber: string;
   digitalInvoiceNo?: string | null;
@@ -106,6 +108,17 @@ export class InvoiceController {
     const invoiceCode = body.invoiceCode?.trim() || null;
     const isRedFlushed = body.isRedFlushed ?? false;
 
+    /*
+     * ★ 凭证类型决定进项税能不能抵，不能有"缺省就当专票"的默认值。
+     *
+     *   这里曾经是 `body.category ?? 'SPECIAL_VAT'` —— 一张出租车卷式票、
+     *   一张没认出来的收据，只要调用方漏传类别，落库就成了
+     *   "可抵扣的增值税专用发票"。isDeductible 同理，曾默认成 true。
+     *   缺失时取 OTHER（"没认出来"），并让可抵扣性跟着凭证类型的口径走：
+     *   宁可保守地不抵扣、要求人工指定，也不要凭空造出一张专票。
+     */
+    const categoryValue: VoucherType = body.category ?? 'OTHER';
+
     // 幂等：命中已有发票则补充附件后返回
     const existing = await this.prisma.invoice.findFirst({
       where: {
@@ -156,7 +169,7 @@ export class InvoiceController {
       data: {
         entityId: body.entityId,
         direction: body.direction,
-        category: body.category ?? 'SPECIAL_VAT',
+        category: categoryValue,
         invoiceCode,
         invoiceNumber: body.invoiceNumber,
         digitalInvoiceNo: body.digitalInvoiceNo ?? null,
@@ -170,7 +183,7 @@ export class InvoiceController {
         taxAmount: toDb(tax),
         amountInclTax: toDb(incl),
         isRedFlushed,
-        isDeductible: body.isDeductible ?? true,
+        isDeductible: body.isDeductible ?? deductibleByVoucherType(categoryValue),
         businessType: body.businessType ?? null,
         accountId,
         partnerId: body.partnerId ?? null,

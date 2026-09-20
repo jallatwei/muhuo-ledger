@@ -19,12 +19,14 @@
  *   V12 卖方是否已在往来单位档案中         INFO
  */
 import { Decimal, VALID_TAX_RATES, assertTaxConsistency, dec, round2 } from '@bookkeeper/shared';
+import { reconcileTaxSplit } from './tax-split';
 import {
-  PASSENGER_TRANSPORT_RATE,
-  detectPassengerTransportKind,
-  isNonDeductibleTaxiVoucher,
-  reconcileTaxSplit,
-} from './tax-split';
+  VOUCHER_RULES,
+  classifyVoucher,
+  formatRate,
+  statutoryRateOf,
+  type VoucherClassification,
+} from '../tax/voucher-type';
 
 export type ValidationLevel = 'PASS' | 'WARN' | 'FAIL' | 'INFO';
 
@@ -119,41 +121,47 @@ function sameParty(a: string | null | undefined, b: string | null | undefined): 
 /**
  * ★ 主校验入口
  */
+export interface VoucherEvidenceInput {
+  fileName?: string | null;
+  /** 票面文本层内容（PDF 有文本层时字符是精确的） */
+  text?: string | null;
+}
+
 export function validateExtraction(
   rawInvoice: ExtractionForValidation,
   entity: EntityContext,
+  voucherEvidence?: VoucherEvidenceInput,
 ): ValidationOutcome {
   const findings: ValidationFinding[] = [];
   const push = (f: ValidationFinding) => findings.push(f);
   let normalizedAmounts: ValidationOutcome['normalizedAmounts'];
 
   /*
-   * ★ 先做价外税勾稽协调，再跑 V1~V12。
+   * ★ 凭证类型判定只做一次，税务处理全部由 VOUCHER_RULES 这张表决定。
    *
-   *   顺序很重要：V1 的意义是"票面三元组自洽"，而旅客运输类凭证
-   *   （铁路电子客票、航空行程单）票面上**只有含税票价**，不含税与税额
-   *   本来就没印，是模型自己算的 —— 拿一个模型算错的数去跑勾稽，
-   *   只会得到一条"识别有误"的误导性结论。
-   *
-   *   所以这里先按法定税率把不含税与税额算出来，V1 再校验算出来的结果。
-   *   倒算发生过就必须留痕（V1D，INFO），让用户看见这个数不是抄来的、
-   *   是算出来的。
+   *   改造前进项税怎么算散在两处按关键词匹配（statutoryRateFor /
+   *   isNonDeductibleTaxiVoucher），两处各维护关键词容易出现
+   *   "一处认得出、另一处认不出"的分叉 —— 而分叉的后果是税额算错。
+   *   判定证据按"离票面越近越可信"排序：模型读到的类别 → 文件名 → 文本层。
    */
-  const statutoryRate = statutoryRateFor(rawInvoice);
+  const voucher: VoucherClassification = classifyVoucher({
+    category: rawInvoice.category,
+    fileName: voucherEvidence?.fileName,
+    text: voucherEvidence?.text,
+  });
+  const rule = VOUCHER_RULES[voucher.type];
+  const statutoryRate = statutoryRateOf(voucher.type);
+  const nonDeductibleVoucher = rule.deduction === 'NONE';
 
-  /*
-   * ★ 出租车卷式 / 通用机打发票：强制进项税额为 0。
-   *
-   *   它属于公路运输，而 13号公告给"列明旅客身份信息的公路、水路等其他客票"
-   *   规定的是 ÷(1+3%)×3%。若不专门拦住，一旦模型（或将来某段逻辑）
-   *   看到"出租车"就按 3% 倒算，就会给一张**本来不能抵扣**的凭证
-   *   凭空算出进项税 —— 每 100 元车费多抵 2.91 元，是实打实的少缴税风险。
-   *
-   *   不可抵扣的原因是"未注明旅客身份信息、且不是增值税扣税凭证"，
-   *   不是"免税"。两者税额都为 0，但口径必须说对。
-   */
-  const nonDeductibleTaxi = isNonDeductibleTaxiVoucher(rawInvoice.category);
-  if (nonDeductibleTaxi) {
+  if (nonDeductibleVoucher) {
+    /*
+     * 不是扣税凭证（出租车卷式、或没认出类型）：强制进项税额为 0。
+     *
+     * ★ 出租车属于公路运输，而公路运输在13号公告里的算法是 ÷(1+3%)×3%。
+     *   若不拦住，一旦模型（或将来某段逻辑）按 3% 倒算，就会给一张
+     *   本来不能抵扣的凭证凭空算出进项税 —— 每 100 元车费多抵 2.91 元，
+     *   是实打实的少缴税风险。
+     */
     const incl = dec(rawInvoice.amountInclTax ?? 0);
     normalizedAmounts = {
       amountExclTax: round2(incl).toFixed(2),
@@ -163,66 +171,62 @@ export function validateExtraction(
     };
     push({
       code: 'V14',
-      level: rawInvoice.taxAmount != null && !dec(rawInvoice.taxAmount).isZero() ? 'WARN' : 'INFO',
-      message:
-        '该凭证是出租车卷式/通用机打发票，**不是增值税扣税凭证**：未注明旅客身份信息，' +
-        '不属于 13号公告允许计算抵扣的"列明旅客身份信息的公路、水路等其他客票"。' +
-        '进项税额为 0，票面全额计入费用。',
+      level:
+        rawInvoice.taxAmount != null && !dec(rawInvoice.taxAmount).isZero() ? 'WARN' : 'INFO',
+      message: `凭证类型判定为「${rule.label}」（${voucher.reason}），按不可抵扣处理：${rule.basis}`,
       suggestion:
-        '不要按公路运输 3% 去倒算进项税 —— 那会凭空多抵。' +
-        '若对方能开增值税电子普通发票（列明税额），可凭票抵扣，此时请换票重传。',
+        voucher.type === 'TAXI'
+          ? '若对方能开增值税电子普通发票（列明税额），可凭票抵扣，此时请换票重传。'
+          : '请人工确认凭证类型；确认可抵扣后指定类型再入账。',
       fields: ['taxAmount', 'taxRate'],
     });
   }
 
   /*
-   * ★ 只对旅客运输凭证倒算。
+   * ★ 只对需要倒算的旅客运输凭证倒算。
    *
    *   专票/普票的票面本来就印了不含税与税额，模型没读到时应当照旧报
    *   "金额字段不完整"让人工补，而不是拿含税倒算出一个看着对的数 ——
    *   那等于用一个新算的数把"模型没读出来"这件事盖住。
-   *   statutoryRateFor() 对非旅客运输凭证返回 null，正好当这个开关。
    */
   const split =
-    statutoryRate && !nonDeductibleTaxi
+    statutoryRate && !nonDeductibleVoucher
       ? reconcileTaxSplit(rawInvoice, statutoryRate)
       : { verdict: 'INSUFFICIENT' as const };
 
-  const invoice: ExtractionForValidation =
-    nonDeductibleTaxi
-      ? { ...rawInvoice, ...normalizedAmounts }
-      : split.verdict === 'DERIVED'
-        ? {
-            ...rawInvoice,
-            amountExclTax: split.amountExclTax,
-            taxRate: split.taxRate,
-            taxAmount: split.taxAmount,
-            amountInclTax: split.amountInclTax,
-          }
-        : rawInvoice;
+  const invoice: ExtractionForValidation = nonDeductibleVoucher
+    ? { ...rawInvoice, ...normalizedAmounts }
+    : split.verdict === 'DERIVED'
+      ? {
+          ...rawInvoice,
+          amountExclTax: split.amountExclTax,
+          taxRate: split.taxRate,
+          taxAmount: split.taxAmount,
+          amountInclTax: split.amountInclTax,
+        }
+      : rawInvoice;
 
   /*
    * ★ 旅客运输进项税抵扣口径留痕。
    *
-   *   13号公告把可抵扣范围限定在与本单位**签订劳动合同的员工**及劳务派遣员工。
-   *   发票上只有身份证号，系统无从判断劳动关系 —— 按约定**默认乘车人为本单位
-   *   员工**处理，不因此拦人工。但假设必须写在明面上：
-   *   万一是外聘专家或客户，这笔进项税不得抵扣，需要人工调整。
+   *   13号公告把可抵扣范围限定在与本单位**签订劳动合同的员工**及劳务派遣员工，
+   *   而发票上只有身份证号，系统无从判断劳动关系。按约定**默认乘车人为本单位
+   *   员工**处理，不因此拦人工；但假设必须写在明面上：万一是外聘专家或客户，
+   *   这笔进项税不得抵扣，需要人工调整。
    */
-  if (statutoryRate && !nonDeductibleTaxi) {
+  if (statutoryRate && !nonDeductibleVoucher) {
     push({
       code: 'V15',
       level: 'INFO',
       message:
-        `旅客运输进项税抵扣：按财政部 税务总局公告2026年第13号 第一条第（二）项，` +
-        `该凭证可抵扣，已按法定 ${(dec(statutoryRate).times(100)).toString()}% 倒算进项税额。`,
+        `凭证类型「${rule.label}」（${voucher.reason}）可抵扣，` +
+        `已按法定 ${formatRate(statutoryRate)} 倒算进项税额。依据：${rule.basis}`,
       suggestion:
         '系统默认乘车人为本单位员工（含劳务派遣）。若实际为外聘专家、客户等非雇员，' +
         '或用于集体福利、个人消费，该进项税额**不得抵扣**，请人工调整。',
       fields: ['taxAmount'],
     });
   }
-
   if (split.verdict === 'DERIVED') {
     normalizedAmounts = {
       amountExclTax: split.amountExclTax ?? '',
@@ -620,14 +624,4 @@ export function decideRouting(params: {
   };
 }
 
-/**
- * 该凭证的**法定**税率。
- *
- * 只对旅客运输凭证返回，且由凭证类型决定，不看模型报的税率 ——
- * 13号公告对铁路/航空与公路水路规定的税率不同（9% / 3%），
- * 认错类型就会算错税额。其他单据（专票、普票）票面本来就印了税率，不需要。
- */
-function statutoryRateFor(invoice: ExtractionForValidation): string | null {
-  const kind = detectPassengerTransportKind(invoice.category);
-  return kind ? PASSENGER_TRANSPORT_RATE[kind] : null;
-}
+

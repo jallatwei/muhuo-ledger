@@ -26,6 +26,7 @@ import { AiService } from '../infrastructure/ai/ai.service';
 import { PrismaService } from '../infrastructure/prisma/prisma.service';
 import { validateExtraction, decideRouting } from '../domain/extraction/validation';
 import { normalizeTaxRate } from '@bookkeeper/shared';
+import { classifyVoucher, deductibleByVoucherType } from '../domain/tax/voucher-type';
 import type { ExtractTargetType } from '../infrastructure/ai/ai-provider.interface';
 import { EXTRACT_TARGETS } from '../infrastructure/ai/ai.service';
 import {
@@ -285,6 +286,9 @@ export class AiController {
         unifiedSocialCreditCode: entity.unifiedSocialCreditCode,
         knownSellerTaxNos: new Set(knownPartners.map((p) => p.taxNo).filter((t): t is string => !!t)),
       },
+      // 判定证据：文件名与文本层都是**不受模型影响**的线索，
+      // 比模型给的类别文本更可靠，一起交给分类器。
+      { fileName: ingested.fileName, text: ingested.text },
     );
 
     const env = this.config.get<Env>('env') as Env;
@@ -302,9 +306,28 @@ export class AiController {
      *   前端拿到的仍是模型那组自相矛盾的数（不含税 41 + 税额 3.38 ≠ 含税 41），
      *   用户确认之后保存的也是它 —— 倒算就白算了，而且这种错更难被发现。
      */
-    const responseData = outcome.normalizedAmounts
-      ? { ...preview.data, ...outcome.normalizedAmounts }
-      : preview.data;
+    /*
+     * ★ 把凭证类型规范化成**受控枚举**再返回。
+     *
+     *   模型给的 category 是自由文本（"出租车发票"、"电子发票（铁路电子客票）"…），
+     *   而落库要的是 InvoiceCategory 枚举。改造前后端得自己翻译，
+     *   落库侧还默认 `category ?? 'SPECIAL_VAT'` —— 一张出租车卷式票
+     *   可能被存成"可抵扣的增值税专用发票"。
+     *   这里一次判好、连 isDeductible 一起返回，下游不必再猜。
+     */
+    const voucher = classifyVoucher({
+      category: preview.data.category as string | undefined,
+      fileName: ingested.fileName,
+      text: ingested.text,
+    });
+    const responseData = {
+      ...preview.data,
+      category: voucher.type,
+      voucherTypeLabel: voucher.type,
+      isDeductible: deductibleByVoucherType(voucher.type),
+      voucherReason: voucher.reason,
+      ...(outcome.normalizedAmounts ?? {}),
+    };
 
     return {
       ...base,
@@ -429,6 +452,9 @@ export class AiController {
         unifiedSocialCreditCode: entity.unifiedSocialCreditCode,
         knownSellerTaxNos: new Set(knownPartners.map((p) => p.taxNo).filter((t): t is string => !!t)),
       },
+      // 本端点是开发/验证用（走 mock 样例机制，没有真实文件），
+      // 因此只有模型给的类别这一个证据。
+      {},
     );
 
     const env = this.config.get<Env>('env') as Env;
@@ -439,10 +465,17 @@ export class AiController {
       threshold: env.OCR_MIN_CONFIDENCE,
     });
 
-    // 同 recognize：倒算出的金额必须覆盖模型返回的金额，否则倒算白算
-    const extractData = outcome.normalizedAmounts
-      ? { ...preview.data, ...outcome.normalizedAmounts }
-      : preview.data;
+    // 同 recognize：受控凭证类型 + 倒算金额都要覆盖模型返回的原值
+    const extractVoucher = classifyVoucher({
+      category: preview.data.category as string | undefined,
+    });
+    const extractData = {
+      ...preview.data,
+      category: extractVoucher.type,
+      isDeductible: deductibleByVoucherType(extractVoucher.type),
+      voucherReason: extractVoucher.reason,
+      ...(outcome.normalizedAmounts ?? {}),
+    };
 
     return {
       preview: { ...preview, data: extractData },

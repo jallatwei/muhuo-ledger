@@ -126,9 +126,11 @@ enum InvoiceCategory {
   SPECIAL_VAT // 增值税专用发票
   GENERAL_VAT // 增值税普通发票
   E_INVOICE // 全电发票（数电票）
-  TRAIN // 火车票
+  TRAIN // 电子发票（铁路电子客票）/ 铁路车票
   AIR // 航空运输电子客票行程单
   TOLL // 通行费发票
+  TAXI // 出租车卷式/通用机打发票 —— 不是扣税凭证，进项税恒为 0
+  ROAD_WATER // 列明旅客身份信息的公路、水路等其他客票（按 3% 计算抵扣）
   OTHER
 }
 
