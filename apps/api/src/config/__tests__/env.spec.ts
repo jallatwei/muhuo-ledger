@@ -96,3 +96,51 @@ describe('describeAiConfig 的深度思考告警', () => {
     expect(warnings.some((w) => w.includes('AI_THINKING_ENABLED'))).toBe(false);
   });
 });
+
+describe('describeAiConfig 的 configured / label（顶栏徽标依赖它）', () => {
+  /*
+   * ★ 这两个字段是给界面顶栏用的，起因是一个真实的 UI bug：
+   *   徽标原先判断 `ai.reachable`，而 /health 根本不返回这个字段
+   *   （只有 /api/ai/health 有，且它要真调一次模型、约 5.8 秒）。
+   *   结果是**任何非 mock 的 provider 都显示「AI: 不可用」**，
+   *   哪怕模型完全正常。改用"配置齐备"这个廉价信号。
+   */
+
+  it('mock：算配置齐备，标签是 Mock（离线）', () => {
+    const d = describeAiConfig(makeEnv({ AI_PROVIDER: 'mock', MIMO_API_KEY: '' }));
+    expect(d.configured).toBe(true);
+    expect(d.label).toBe('Mock（离线）');
+  });
+
+  it('openai-compatible 且 key/baseUrl/模型齐全 → configured=true，标签用视觉模型名', () => {
+    const d = describeAiConfig(makeEnv({ MIMO_API_KEY: 'k' }));
+    expect(d.configured).toBe(true);
+    expect(d.label).toBe('mimo-v2.5');
+  });
+
+  it('缺密钥 → configured=false（界面应显示「未配置」）', () => {
+    const d = describeAiConfig(makeEnv({ MIMO_API_KEY: '', AI_API_KEY: '' }));
+    expect(d.configured).toBe(false);
+  });
+
+  it('缺 baseUrl / 视觉模型名 → configured=false', () => {
+    expect(describeAiConfig(makeEnv({ MIMO_API_KEY: 'k', AI_BASE_URL: '' })).configured).toBe(false);
+    expect(describeAiConfig(makeEnv({ MIMO_API_KEY: 'k', AI_VISION_MODEL: '' })).configured).toBe(false);
+  });
+
+  it('★ 开了深度思考只是"有风险"，不能算成"未配置"', () => {
+    // 把"配置缺失"和"配置有风险"混成一个列表是个很容易犯的错：
+    // 一旦混了，用户只是打开了思考开关，顶栏就会红着脸说"AI 未配置"，
+    // 而实际上模型好得很 —— 会把人引去查一个不存在的问题。
+    const d = describeAiConfig(makeEnv({ MIMO_API_KEY: 'k', AI_THINKING_ENABLED: true }));
+    expect(d.warnings.some((w) => w.includes('AI_THINKING_ENABLED'))).toBe(true);
+    expect(d.configured).toBe(true);
+  });
+
+  it('本地模型地址（localhost）没有密钥也算配置齐备', () => {
+    const d = describeAiConfig(
+      makeEnv({ AI_BASE_URL: 'http://localhost:11434/v1', MIMO_API_KEY: '', AI_API_KEY: '' }),
+    );
+    expect(d.configured).toBe(true);
+  });
+});

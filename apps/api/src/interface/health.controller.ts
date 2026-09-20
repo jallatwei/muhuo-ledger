@@ -46,6 +46,18 @@ export class HealthController {
         provider: env.AI_PROVIDER,
         summary: ai.summary,
         warnings: ai.warnings,
+        /*
+         * ★ 给界面顶栏用的**配置**信号，刻意不含连通性。
+         *
+         *   顶栏徽标原先判断 `ai.reachable`，而这个字段只存在于
+         *   GET /api/ai/health（它要真调一次模型，实测约 5.8 秒）。
+         *   于是任何非 mock 的 provider 都会显示「AI: 不可用」——
+         *   哪怕模型完全正常。这是本次修掉的 UI bug。
+         *   真实连通性仍由 /api/ai/health 按需提供，总览页在用。
+         */
+        configured: ai.configured,
+        label: ai.label,
+        visionModel: env.AI_VISION_MODEL || null,
       },
       bookkeeping: {
         autoPost: env.BOOKKEEPING_AUTO_POST,

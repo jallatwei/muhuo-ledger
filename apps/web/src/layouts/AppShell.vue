@@ -37,13 +37,40 @@ const periodStatusType = computed(() => {
   return s === 'OPEN' ? 'success' : s === 'CLOSING' ? 'warning' : 'info';
 });
 
+/**
+ * 顶栏的 AI 徽标。
+ *
+ * ★ 这里显示的是**配置**状态，不是连通性 —— 不要拿 ai.reachable 来判断。
+ *   /health 不返回 reachable（只返回配置），而真正带 reachable 的
+ *   /api/ai/health 要真调一次模型（实测约 5.8 秒），每次进页面都探一次
+ *   既慢又花钱。改造前这里正是读了一个不存在的字段，导致**任何非 mock 的
+ *   provider 都显示「AI: 不可用」**，哪怕模型完全正常。
+ *   要知道"到底通不通"，看总览页 —— 那里按需调 /ai/health。
+ */
 const aiTag = computed(() => {
   const h = health.value;
-  if (!h) return { text: 'AI 状态未知', type: 'info' as const };
-  if (h.ai?.provider === 'mock') return { text: 'AI: Mock（离线）', type: 'info' as const };
-  return h.ai?.reachable
-    ? { text: `AI: ${h.ai.provider}`, type: 'success' as const }
-    : { text: 'AI: 不可用', type: 'danger' as const };
+  if (!h) return { text: 'AI 状态未知', type: 'info' as const, hint: '' };
+
+  const ai = h.ai ?? {};
+  if (ai.provider === 'mock') {
+    return {
+      text: 'AI: Mock（离线）',
+      type: 'info' as const,
+      hint: '识图走离线样例，零成本、结果确定。适合开发与测试。',
+    };
+  }
+  if (!ai.configured) {
+    return {
+      text: 'AI: 未配置',
+      type: 'danger' as const,
+      hint: (ai.warnings ?? []).join('\n') || 'AI 相关配置不完整，识图无法调用真实模型。',
+    };
+  }
+  return {
+    text: `AI: ${ai.label ?? ai.provider}`,
+    type: 'success' as const,
+    hint: `${ai.summary ?? ''}\n（这是配置状态；连通性请在总览页查看）`,
+  };
 });
 
 /** 菜单项 —— 按角色权限过滤，没权限的干脆不显示（而不是点了才报 403） */
@@ -215,7 +242,7 @@ watch(
             {{ periodStatusText }}
           </el-tag>
 
-          <el-tag size="small" :type="aiTag.type" effect="plain">{{ aiTag.text }}</el-tag>
+          <el-tag size="small" :type="aiTag.type" effect="plain" :title="aiTag.hint">{{ aiTag.text }}</el-tag>
 
           <el-tooltip
             v-if="health?.bookkeeping"

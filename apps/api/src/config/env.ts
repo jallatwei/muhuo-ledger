@@ -147,25 +147,48 @@ export function resolveAiApiKey(env: Pick<Env, 'MIMO_API_KEY' | 'AI_API_KEY'>): 
   return env.MIMO_API_KEY || env.AI_API_KEY || '';
 }
 
+export interface AiConfigDescription {
+  /** 全部提示：既含"配置缺失"，也含"配置有风险" */
+  warnings: string[];
+  summary: string;
+  /**
+   * 配置是否**齐备**（key / baseUrl / 模型名都在）。
+   *
+   * ★ 这里刻意只判断配置、**不探测连通性**：探测要真调一次模型，
+   *   实测约 5.8 秒。界面顶栏每次进页面都探测一次是不可接受的
+   *   （慢且花钱）。真实连通性由 GET /api/ai/health 提供 ——
+   *   那是按需调用，总览页在使用。
+   *   所以界面上这个信号的含义是"配置齐了，可以试"，不是"一定通"。
+   */
+  configured: boolean;
+  /** 供界面展示的短标签，如 "mimo-v2.5" / "Mock（离线）" */
+  label: string;
+}
+
 /**
  * AI 配置完整性与安全提示。
  * 不阻断启动（mock 模式是合法的），但要在日志里说清楚。
  */
-export function describeAiConfig(env: Env): { warnings: string[]; summary: string } {
+export function describeAiConfig(env: Env): AiConfigDescription {
   const warnings: string[] = [];
+  /** 只装"配置缺失"这一类 —— 风险提示不该把 AI 判成"未配置" */
+  const missing: string[] = [];
 
   if (env.AI_PROVIDER === 'mock') {
     return {
       warnings,
       summary: 'AI_PROVIDER=mock：识图走离线样例，零成本、结果确定。适合开发与测试。',
+      configured: true,
+      label: 'Mock（离线）',
     };
   }
 
-  if (!env.AI_BASE_URL) warnings.push('AI_BASE_URL 未配置，识图将无法调用真实模型');
-  if (!env.AI_VISION_MODEL) warnings.push('AI_VISION_MODEL 未配置，无法识图');
+  if (!env.AI_BASE_URL) missing.push('AI_BASE_URL 未配置，识图将无法调用真实模型');
+  if (!env.AI_VISION_MODEL) missing.push('AI_VISION_MODEL 未配置，无法识图');
   if (!resolveAiApiKey(env) && !env.AI_BASE_URL.includes('localhost') && !env.AI_BASE_URL.includes('host.docker.internal')) {
-    warnings.push('未配置 AI 密钥（MIMO_API_KEY 或 AI_API_KEY），云端模型服务会拒绝请求');
+    missing.push('未配置 AI 密钥（MIMO_API_KEY 或 AI_API_KEY），云端模型服务会拒绝请求');
   }
+  warnings.push(...missing);
 
   // ★ 开启深度思考有两个**静默**副作用，必须在这里点出来 ——
   //   两者都不会报错，只会让结果悄悄变差，正是"别记错"最怕的那类问题：
@@ -193,6 +216,8 @@ export function describeAiConfig(env: Env): { warnings: string[]; summary: strin
     summary: `AI_PROVIDER=${env.AI_PROVIDER}，视觉模型 ${env.AI_VISION_MODEL || '(未配置)'}，文本模型 ${
       env.AI_TEXT_MODEL || '(未配置)'
     }`,
+    configured: missing.length === 0,
+    label: env.AI_VISION_MODEL || env.AI_PROVIDER,
   };
 }
 
