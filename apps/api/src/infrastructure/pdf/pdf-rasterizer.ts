@@ -21,7 +21,7 @@
  *
  *   代价：mupdf 是纯 ESM，而本项目 API 编译成 CommonJS —— 见 dynamicImport。
  */
-import { Injectable, Logger } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 
 /** 渲染出的单页 */
 export interface RasterizedPage {
@@ -122,12 +122,36 @@ export class PdfRasterizer {
     const maxDimension = options.maxDimension ?? TARGET_MAX_DIMENSION;
 
     const mupdf = await dynamicImport('mupdf');
-    const doc = mupdf.Document.openDocument(buffer, 'application/pdf');
+
+    /*
+     * ★ openDocument 必须包在 try 里。
+     *
+     *   实测：传一个不是 PDF 的文件（后缀改成 .pdf 的文本、或损坏的 PDF），
+     *   mupdf 的 WASM 直接抛出内部错误 "no objects found"。
+     *   改造初期它在这个 try 之外，于是原始内部信息一路漏成 500
+     *   「系统内部错误」—— 用户既不知道是文件的问题，也不知道该怎么办。
+     *
+     *   PDF 文本层解析失败（pdfjs 报 Invalid PDF structure）时会走到这里，
+     *   此时文件本身就已经不可读了，所以按**用户输入问题**报 400，
+     *   并说清"这个文件不是有效的 PDF"与可行的出路。
+     */
+    let doc: MupdfDocument;
+    try {
+      doc = mupdf.Document.openDocument(buffer, 'application/pdf');
+    } catch (e) {
+      this.logger.warn(
+        `PDF 无法打开（mupdf）：${e instanceof Error ? e.message : String(e)}`,
+      );
+      throw new BadRequestException(
+        '这个文件无法作为 PDF 打开：它可能已损坏、被加密，或者只是把后缀改成了 .pdf。' +
+          '请确认原件能正常打开后再上传；也可以先把页面截图，以图片形式上传。',
+      );
+    }
 
     try {
       const totalPages = doc.countPages();
       if (totalPages === 0) {
-        throw new Error('这个 PDF 一页都没有，可能是文件损坏或不是真正的 PDF。');
+        throw new BadRequestException('这个 PDF 一页都没有，可能是文件损坏或不是真正的 PDF。');
       }
 
       const pages: RasterizedPage[] = [];
@@ -185,7 +209,7 @@ export class PdfRasterizer {
       this.logger.warn(
         `PDF 第 ${index + 1} 页渲染失败：${e instanceof Error ? e.message : String(e)}`,
       );
-      throw new Error(
+      throw new BadRequestException(
         `PDF 第 ${index + 1} 页渲染失败，无法转为图片送模型识别。` +
           '请确认该 PDF 未加密、未损坏；也可以先把页面截图后以图片形式上传。',
       );

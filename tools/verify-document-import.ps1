@@ -52,28 +52,61 @@ function Upload-Doc([string]$path, [string]$entityId, [string]$docType) {
 
 # 上传一个内容唯一的探针文件（内容不同 → 哈希不同 → 不触发文件级去重）
 $script:probeSeq = 0
+<#
+  构造一个**结构合法**的最小单页 PDF，内容带唯一标记。
+
+  ★ 为什么不能再用 "%PDF probe ..." 这种伪造文本：
+    识别链路现在会真的去解析文件 —— pdfjs 取文本层、取不到则用 mupdf 渲染。
+    伪造的 PDF 会被正当拒掉（400「这个文件无法作为 PDF 打开」）。
+    改造前能过只是因为 mock provider 根本不看文件内容，那是**测不出问题**的假通过。
+
+    这里仍然保证内容唯一（带上序号与随机数），以绕开"同一文件二次上传判重"。
+#>
+function New-MinimalPdf([string]$path, [string]$marker) {
+  $content = "BT /F1 12 Tf 20 60 Td (PROBE $marker) Tj ET"
+  $objects = @(
+    '<</Type/Catalog/Pages 2 0 R>>',
+    '<</Type/Pages/Kids[3 0 R]/Count 1>>',
+    '<</Type/Page/Parent 2 0 R/MediaBox[0 0 300 150]/Contents 4 0 R/Resources<</Font<</F1 5 0 R>>>>>>',
+    "<</Length $($content.Length)>>`nstream`n$content`nendstream",
+    '<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>'
+  )
+
+  $sb = New-Object System.Text.StringBuilder
+  [void]$sb.Append("%PDF-1.4`n")
+  $offsets = @()
+  for ($i = 0; $i -lt $objects.Count; $i++) {
+    $offsets += $sb.Length
+    [void]$sb.Append("$($i + 1) 0 obj`n$($objects[$i])`nendobj`n")
+  }
+  $xrefPos = $sb.Length
+  [void]$sb.Append("xref`n0 $($objects.Count + 1)`n")
+  [void]$sb.Append("0000000000 65535 f `n")
+  foreach ($o in $offsets) { [void]$sb.Append(('{0:D10} 00000 n ' -f $o) + "`n") }
+  [void]$sb.Append("trailer`n<</Size $($objects.Count + 1)/Root 1 0 R>>`nstartxref`n$xrefPos`n%%EOF`n")
+
+  # 全 ASCII，字符下标 == 字节偏移，xref 里的偏移量才对
+  [System.IO.File]::WriteAllBytes($path, [System.Text.Encoding]::ASCII.GetBytes($sb.ToString()))
+}
 function Upload-Probe([string]$entityId, [string]$docType = 'INVOICE_PURCHASE') {
   $script:probeSeq += 1
   $tmp = Join-Path $env:TEMP 'bk-doc-verify'
   New-Item -ItemType Directory -Force -Path $tmp | Out-Null
   $f = Join-Path $tmp "probe-$($script:probeSeq)-$(Get-Random).pdf"
-  [System.IO.File]::WriteAllBytes(
-    $f,
-    [System.Text.Encoding]::UTF8.GetBytes("%PDF probe $($script:probeSeq) $(Get-Date -Format o) $(Get-Random)")
-  )
+  New-MinimalPdf $f "probe-$($script:probeSeq)-$(Get-Random)"
   return Upload-Doc $f $entityId $docType
 }
 Write-Host "`n=== 0. 准备 ===" -ForegroundColor Cyan
 $entityId = (Invoke-RestMethod "$API/entities")[0].id
 Write-Host "  主体：$entityId"
 
-# 造两个内容不同的假发票文件（内容不同 → 哈希不同 → 不触发去重）
+# 造两个**结构合法**且内容不同的 PDF（内容不同 → 哈希不同 → 不触发去重）
 $tmp = Join-Path $env:TEMP 'bk-doc-verify'
 New-Item -ItemType Directory -Force -Path $tmp | Out-Null
 $fake1 = Join-Path $tmp 'invoice-a.pdf'
 $fake2 = Join-Path $tmp 'invoice-b.pdf'
-[System.IO.File]::WriteAllBytes($fake1, [System.Text.Encoding]::UTF8.GetBytes("%PDF-1.4 fake invoice A $(Get-Date -Format o)"))
-[System.IO.File]::WriteAllBytes($fake2, [System.Text.Encoding]::UTF8.GetBytes("%PDF-1.4 fake invoice B $(Get-Date -Format o)"))
+New-MinimalPdf $fake1 "invoice-a-$(Get-Date -Format o)"
+New-MinimalPdf $fake2 "invoice-b-$(Get-Date -Format o)"
 
 # 清掉上次运行留下的测试发票与单据
 $existingInvoices = Get-List "$API/invoices?entityId=$entityId&pageSize=200"
