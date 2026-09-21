@@ -1,0 +1,42 @@
+<svg width="256" height="256" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!--
+    木火账房 · 应用图标（详细版，用于 32px 及以上）
+    ============================================================
+    与 apps/web/src/components/AppLogo.vue 同构，但**颜色写死**：
+    组件里用的是 CSS 变量（CSS 变量 bk-wood-500），栅格化工具不保证
+    解析带 fallback 的 CSS 变量，图标一旦渲成空白很难查。
+    改配色时三处一起改：theme.css / AppLogo.vue / 这里。
+
+    取象：外廓土（近真灰）承托；主干木（松绿）为用神、是主角；
+    贴地一簇火（赤陶）为喜神，温养寒木而不喧宾夺主；三点极淡水。
+  -->
+  <defs>
+    <linearGradient id="wood" x1="24" y1="40" x2="24" y2="8" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#2d5344"/>
+      <stop offset="60%" stop-color="#376754"/>
+      <stop offset="100%" stop-color="#5ea186"/>
+    </linearGradient>
+    <linearGradient id="fire" x1="24" y1="41" x2="24" y2="28" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#966a5c"/>
+      <stop offset="100%" stop-color="#cfbbb4"/>
+    </linearGradient>
+  </defs>
+
+  <rect x="2" y="2" width="44" height="44" rx="10" fill="#2f2f33"/>
+
+  <circle cx="10.5" cy="11" r="1.3" fill="#7f98a3" opacity="0.36"/>
+  <circle cx="37.5" cy="11" r="1.3" fill="#7f98a3" opacity="0.36"/>
+  <circle cx="24" cy="6.4" r="1.1" fill="#7f98a3" opacity="0.26"/>
+
+  <path d="M24 41.5V13.5" stroke="url(#wood)" stroke-width="2.6" stroke-linecap="round"/>
+  <path d="M24 25.5c-3.6-1.4-6.4-4-7.8-7.6" stroke="#376754" stroke-width="2" stroke-linecap="round"/>
+  <path d="M24 20.5c3.6-1.4 6.4-4 7.8-7.6" stroke="#376754" stroke-width="2" stroke-linecap="round"/>
+  <path d="M24 9.2c2.6 2.2 3.9 4.6 3.9 7.2-2.6-.7-4.3-2.1-5.2-4.2.6-1 .9-2 1.3-3Z" fill="#5ea186"/>
+  <path d="M15.4 16.6c3.4-.5 5.9.3 7.6 2.3-2.4 1.3-4.8 1.4-7.1.3-.3-.9-.4-1.8-.5-2.6Z" fill="#5ea186" opacity="0.9"/>
+  <path d="M32.6 16.6c-3.4-.5-5.9.3-7.6 2.3 2.4 1.3 4.8 1.4 7.1.3.3-.9.4-1.8.5-2.6Z" fill="#5ea186" opacity="0.9"/>
+
+  <path d="M24 38.6c1.7 1.9 3.1 3.4 3.1 5.1 0 1.7-1.4 2.9-3.1 2.9s-3.1-1.2-3.1-2.9c0-1.7 1.4-3.2 3.1-5.1Z"
+        fill="url(#fire)" transform="translate(0,-7)"/>
+
+  <path d="M14 41.6h20" stroke="#a49c79" stroke-width="1.8" stroke-linecap="round"/>
+</svg>
