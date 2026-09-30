@@ -62,9 +62,28 @@ server {
         try_files $uri =404;
     }
 
+    # ---- SPA 外壳：必须每次回源校验 ----
+    # ★ index.html 不能靠浏览器的启发式缓存。
+    #
+    #   /assets/ 是一年 immutable（文件名带内容哈希，内容变了名字就变），
+    #   但"当前该加载哪个哈希"这件事写在 index.html 里 —— 它自己必须先刷新。
+    #   不设这条会出一次实测踩到的故障：
+    #     镜像重建、服务端已是新包，用户的浏览器却仍用缓存里的旧 index.html
+    #     → 旧 index.html 指向旧 JS → 前端请求丢掉 /api 前缀 → 登录 405；
+    #     而 nginx 日志显示用户确实发了请求、服务端一切正常。
+    #     表现是"修好了但用户还是坏的"，从服务端完全看不出问题。
+    #
+    #   用 no-cache（要回源校验）而不是 no-store：前者仍能走 304，
+    #   既保证拿到最新外壳，也不重复传整份 HTML。
+    location = /index.html {
+        add_header Cache-Control "no-cache, must-revalidate" always;
+    }
+
     # ---- SPA 兜底 ----
     # ★ 必须放在最后。history 模式下刷新 /vouchers/xxx 要回落到 index.html，
     #   否则用户刷新页面会拿到 404 —— 而路由在前端是好的，看起来像"功能坏了"。
+    #   注意 try_files 末尾的 /index.html 是一次**内部重定向**，会重新匹配
+    #   location，所以上面那条 = /index.html 的缓存头对它同样生效。
     location / {
         try_files $uri $uri/ /index.html;
     }
