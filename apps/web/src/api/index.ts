@@ -7,8 +7,11 @@
  */
 import axios, { type AxiosError } from 'axios';
 import { ElMessage } from 'element-plus';
+import { resolveApiBaseUrl } from './base-url';
 
-const baseURL = import.meta.env.VITE_API_BASE_URL ?? '/api';
+// ★ 解析规则见 api/base-url.ts —— 那里写清了用 ?? 会怎么坏，
+//   以及为什么这个 bug 只在构建产物里出现。别在这里内联回去。
+const baseURL = resolveApiBaseUrl(import.meta.env.VITE_API_BASE_URL);
 
 /** 令牌在 localStorage 里的键。与 stores/auth.ts 保持一致 */
 const TOKEN_KEY = 'bk.auth.token';

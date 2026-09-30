@@ -56,6 +56,12 @@ COPY tools/check-routes.mjs tools/check-routes.mjs
 
 # ★ 默认留空 —— 前端回退到相对路径 /api，由 nginx 同源转发。
 #   传了值才会被 Vite 内联进产物（用于把前端单独部署到另一个域名的场景）。
+#
+# ⚠️ 注意"留空"的实际含义：这里会把 VITE_API_BASE_URL **显式定义成空字符串**，
+#    而不是不定义。前端必须把空串当作"没给"来处理（见 apps/web/src/api/base-url.ts）。
+#    曾经前端写成 `import.meta.env.VITE_API_BASE_URL ?? '/api'`，空串过不了 ??，
+#    于是 baseURL 变成空串、所有请求丢掉 /api 前缀，生产页面登录 405，
+#    而开发态因为变量未定义反倒正常 —— 见那个文件里的详细说明。
 ARG PUBLIC_API_BASE_URL=
 ENV VITE_API_BASE_URL=${PUBLIC_API_BASE_URL}
 
