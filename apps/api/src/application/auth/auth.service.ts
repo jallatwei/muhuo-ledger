@@ -39,14 +39,18 @@ import {
 } from '../../domain/auth/permissions';
 import { BUILTIN_ACCOUNTS } from '../../domain/accounting/chart-of-accounts';
 import {
+  BCRYPT_ROUNDS,
+  WeakPasswordError,
+  assertPassword,
+} from '../../domain/auth/password-policy';
+import {
   buildPeriodRows,
   upsertBuiltinAccounts,
   type AccountUpsertClient,
 } from '../../domain/accounting/account-tree';
 import type { Env } from '../../config/env';
 
-/** bcrypt 成本因子。12 在现代硬件上约 250ms，足够慢到难以暴力破解，又不影响体验 */
-const BCRYPT_ROUNDS = 12;
+
 
 export interface AuthUser {
   id: string;
@@ -139,7 +143,15 @@ export class AuthService {
   }): Promise<LoginResult> {
     const email = normalizeEmail(input.email);
     assertEmail(email);
-    assertPassword(input.password);
+    // 领域层只关心"合不合规"，不关心 HTTP。映射成 DomainError 是这里的事
+    try {
+      assertPassword(input.password);
+    } catch (e) {
+      if (e instanceof WeakPasswordError) {
+        throw new DomainError('BK_E_WEAK_PASSWORD', e.userMessage, 400, e.reason);
+      }
+      throw e;
+    }
 
     const existing = await this.prisma.user.findUnique({ where: { email } });
     if (existing) {
@@ -393,7 +405,14 @@ export class AuthService {
     if (!(await bcrypt.compare(params.currentPassword, user.passwordHash))) {
       throw new DomainError('BK_E_BAD_CREDENTIALS', '当前密码不正确。', 401, '旧密码不匹配');
     }
-    assertPassword(params.newPassword);
+    try {
+      assertPassword(params.newPassword);
+    } catch (e) {
+      if (e instanceof WeakPasswordError) {
+        throw new DomainError('BK_E_WEAK_PASSWORD', e.userMessage, 400, e.reason);
+      }
+      throw e;
+    }
 
     await this.prisma.user.update({
       where: { id: user.id },
@@ -729,24 +748,6 @@ function assertEmail(email: string): void {
  *   过严的规则会把人逼去用 `Passw0rd!` 这类可预测的组合，反而更弱。
  *   这里拦的是真正危险的：太短、纯数字、以及把邮箱当密码。
  */
-function assertPassword(pwd: string): void {
-  if (!pwd || pwd.length < 8) {
-    throw new DomainError(
-      'BK_E_WEAK_PASSWORD',
-      '密码至少 8 位。建议用一句只有你记得住的话（如「我家猫叫豆豆2019」），比复杂但记不住的组合更安全。',
-      400,
-      '密码过短',
-    );
-  }
-  if (/^\d+$/.test(pwd)) {
-    throw new DomainError(
-      'BK_E_WEAK_PASSWORD',
-      '密码不能是纯数字。请混合字母或符号 —— 纯数字在几秒内就能被穷举。',
-      400,
-      '密码为纯数字',
-    );
-  }
-}
 
 function toAuthUser(u: {
   id: string;
