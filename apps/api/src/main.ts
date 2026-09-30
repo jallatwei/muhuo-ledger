@@ -11,6 +11,7 @@ import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { ConfigService } from '@nestjs/config';
 import { Logger } from 'nestjs-pino';
 import helmet from 'helmet';
+import { json, urlencoded } from 'express';
 
 import { AppModule } from './app.module';
 import { APP_NAME } from '@bookkeeper/shared';
@@ -18,8 +19,41 @@ import { describeAiConfig, describeBookkeepingSafety, type Env } from './config/
 import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
 import { PrismaService } from './infrastructure/prisma/prisma.service';
 
+/**
+ * 请求体上限。
+ *
+ * ★ 这个值必须 ≥ 一次性提交的最大业务负载。历史上这里用的是框架默认的
+ *   100kb，导致历史数据导入（几百行明细）直接失败 —— 详见下面注册处。
+ */
+const BODY_LIMIT = '50mb';
+
 async function bootstrap(): Promise<void> {
-  const app = await NestFactory.create(AppModule, { bufferLogs: true });
+  /*
+   * ★ bodyParser: false 是必须的，不能省。
+   *
+   *   Nest 默认会注册 express.json()，用的是它自带的 **100kb** 上限。
+   *   而 `app.use(json({ limit }))` 是**追加**一个解析器 —— 默认那个仍排在
+   *   前面、仍会先以 100kb 拒绝。也就是说"只加一行 app.use(json(...))"
+   *   看起来改好了，实际一点用都没有（很容易误判为修完了）。
+   *   所以这里显式关掉默认的，再自己按需要的上限注册。
+   *
+   *   multipart（附件上传）由 Multer 经 FileInterceptor 处理，不受影响。
+   */
+  const app = await NestFactory.create(AppModule, { bufferLogs: true, bodyParser: false });
+
+  /*
+   * ★ 上限为什么给到 50MB：
+   *   历史数据导入是**整表一次性提交**的 —— 实测一份 383 行 × 27 列的
+   *   进项明细导出，序列化成 JSON 后远超 100kb，直接报
+   *   "request entity too large"。而当年这一批数据往往就是几千行。
+   *
+   *   50MB 与 STORAGE_MAX_FILE_MB（单文件 50MB）取齐；nginx 侧
+   *   client_max_body_size 是 60m，比它宽，网关不会先拦。
+   *   这是自托管单租户场景的合理取舍；上云多租户时应改为按接口限流 +
+   *   分片上传，而不是继续放大这个数字。
+   */
+  app.use(json({ limit: BODY_LIMIT }));
+  app.use(urlencoded({ extended: true, limit: BODY_LIMIT }));
 
   app.useLogger(app.get(Logger));
   app.setGlobalPrefix('api');

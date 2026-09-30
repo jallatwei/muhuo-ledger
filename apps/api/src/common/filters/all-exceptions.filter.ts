@@ -137,7 +137,34 @@ export class AllExceptionsFilter implements ExceptionFilter {
       };
     }
 
-    // ② Prisma / 数据库错误：尝试翻译 BK_E_* 触发器错误
+    /*
+     * ② 请求体过大（body-parser / raw-body 的 PayloadTooLargeError）
+     *
+     *   ★ 这类错误原本落到 500「系统内部错误」，是最没用的一种提示：
+     *     用户只知道"导入失败"，既不知道原因（数据太大）也不知道怎么办。
+     *     实测就是它把"2017 年进销项导入"变成了一个查不出原因的失败。
+     *
+     *   body-parser 抛出的这个对象带 type='entity.too.large' 与 status=413，
+     *   但它的 message 是英文的 "request entity too large"，
+     *   直接透传等于没翻译，所以这里给一句可操作的中文。
+     */
+    const bpType = (exception as { type?: string })?.type;
+    if (bpType === 'entity.too.large') {
+      const limit = (exception as { limit?: number })?.limit;
+      const limitText =
+        typeof limit === 'number' ? `（上限约 ${Math.round(limit / 1024 / 1024)}MB）` : '';
+      return {
+        statusCode: HttpStatus.PAYLOAD_TOO_LARGE,
+        code: 'BK_E_PAYLOAD_TOO_LARGE',
+        message: 'request entity too large',
+        userMessage:
+          `提交的数据量超过服务端允许的上限${limitText}。` +
+          '若是历史数据导入，请**分批提交**（例如按年度或按月份拆成几次），' +
+          '或改用文件上传的方式。数据未被修改。',
+      };
+    }
+
+    // ③ Prisma / 数据库错误：尝试翻译 BK_E_* 触发器错误
     const pgCode = (exception as { code?: string })?.code;
     const rawMessage = exception instanceof Error ? exception.message : String(exception);
 
